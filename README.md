@@ -187,6 +187,49 @@ These cover:
 - x402 challenge generation
 - purchase fulfillment path
 
+## Inspecting persisted state
+
+The proxy server stores sessions, listings, payment intents, pending refunds, and
+artifact metadata in a single SQLite file at `proxy-server/data/netra.db`. On
+first run after this migration, any pre-existing `sessions.json`,
+`listings.json`, `payment-intents.json`, or `pending-refunds.json` files are
+imported into the database in one transaction and renamed to `*.json.migrated`.
+
+```bash
+cd proxy-server
+sqlite3 data/netra.db
+```
+
+Useful queries:
+
+```sql
+-- active sessions and remaining time
+SELECT id, ip, listing_id, paid_until, minutes_purchased, status
+FROM sessions
+WHERE status = 'active'
+ORDER BY started_at DESC;
+
+-- earnings per listing (paid minus refunded)
+SELECT listing_id,
+       COUNT(*)                                      AS total_sessions,
+       ROUND(SUM(amount_sol), 6)                     AS gross_sol,
+       ROUND(SUM(json_extract(refund_json, '$.amountSol')), 6) AS refunded_sol
+FROM sessions
+GROUP BY listing_id;
+
+-- pending refund retries
+SELECT id, session_id, attempts, status, last_error, next_attempt_at
+FROM pending_refunds
+WHERE status = 'pending'
+ORDER BY next_attempt_at ASC;
+
+-- recent artifacts and their Synapse upload state
+SELECT cid, kind, session_id, listing_id, synapse_status, created_at
+FROM artifacts
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
 ## Known Limitations
 
 - Synapse uploads are env-gated because they require funded Filecoin credentials; without them the app still produces deterministic local CIDs.

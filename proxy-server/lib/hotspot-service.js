@@ -1,10 +1,11 @@
 "use strict";
 
 const crypto = require("crypto");
-const path = require("path");
 const { v4: uuidv4 } = require("uuid");
 
 const { createArtifactStore } = require("./artifacts");
+const { openDatabase } = require("./db");
+const { migrateLegacyJson } = require("./db-migrations");
 const {
   LAMPORTS_PER_SOL,
   formatSol,
@@ -31,7 +32,7 @@ function normalizeSSID(value) {
   if (!trimmed) return "";
 
   const withoutPrefix = trimmed
-    .replace(/^\u26a1\s*/u, "")
+    .replace(/^⚡\s*/u, "")
     .replace(/^Netra[-\s]*/i, "")
     .replace(/^HDX[-\s]*/i, "")
     .replace(/^hotspotdex[-\s]*/i, "");
@@ -109,44 +110,95 @@ function createHotspotService({
   ratePerMinute = Number(process.env.RATE_PER_MIN || 0.001),
   portalPort = Number(process.env.PORTAL_PORT || 8888),
 }) {
-  const artifactStore = createArtifactStore({ dataDir });
-  const sessionsPath = path.join(dataDir, "sessions.json");
-  const listingsPath = path.join(dataDir, "listings.json");
-  const intentsPath = path.join(dataDir, "payment-intents.json");
+  const store = openDatabase({ dataDir });
+  const artifactStore = createArtifactStore({
+    dataDir,
+    onPersist: (artifact, metadata) => {
+      store.recordArtifact({
+        cid: artifact.cid,
+        kind: artifact.kind,
+        sessionId: metadata?.sessionId ?? null,
+        listingId: metadata?.listingId ?? null,
+        localPath: artifact.localPath,
+        synapse: artifact.synapse,
+        createdAt: artifact.createdAt,
+      });
+    },
+  });
 
-  const state = {
-    sessions: artifactStore.readJson(sessionsPath, []),
-    listings: artifactStore.readJson(listingsPath, []),
-    intents: artifactStore.readJson(intentsPath, []),
-  };
+  migrateLegacyJson({
+    dataDir,
+    store,
+    log: (msg) => console.log(`[netra-db] ${msg}`),
+  });
 
-  function persist() {
-    artifactStore.writeJson(sessionsPath, state.sessions);
-    artifactStore.writeJson(listingsPath, state.listings);
-    artifactStore.writeJson(intentsPath, state.intents);
+  const REFUND_MAX_ATTEMPTS = 5;
+  const REFUND_INITIAL_BACKOFF_MS = 30_000;
+
+  const extensionMutexes = new Map();
+  // The session ledger keeps one canonical JS object per session_id so concurrent
+  // callers see each other's mutations the same way the old in-memory state did.
+  const sessionInstances = new Map();
+
+  function withSessionLock(sessionId, fn) {
+    const previous = extensionMutexes.get(sessionId) || Promise.resolve();
+    const current = previous.then(fn, fn);
+    const tracker = current.catch(() => {});
+    extensionMutexes.set(sessionId, tracker);
+    tracker.then(() => {
+      if (extensionMutexes.get(sessionId) === tracker) {
+        extensionMutexes.delete(sessionId);
+      }
+    });
+    return current;
   }
 
   function ts(value = now()) {
     return new Date(value).toISOString();
   }
 
+  function bindSession(row) {
+    if (!row) return null;
+    const cached = sessionInstances.get(row.session_id);
+    if (!cached) {
+      sessionInstances.set(row.session_id, row);
+      return row;
+    }
+    if (new Date(row.updatedAt).getTime() > new Date(cached.updatedAt).getTime()) {
+      for (const key of Object.keys(row)) cached[key] = row[key];
+    }
+    return cached;
+  }
+
+  function persistSession(session) {
+    store.upsertSession(session);
+    sessionInstances.set(session.session_id, session);
+  }
+
   function getActiveSessionForIp(ip) {
-    return state.sessions.find(
-      (session) =>
-        session.ip === ip &&
-        session.status === "active" &&
-        new Date(session.paid_until).getTime() > now()
-    );
+    const row = store.getActiveSessionForIp(ip);
+    if (!row) return null;
+    if (new Date(row.paid_until).getTime() <= now()) return null;
+    return bindSession(row);
+  }
+
+  function getSessionById(id) {
+    const row = store.getSessionById(id);
+    return bindSession(row);
   }
 
   function pickListing(listingId) {
-    const direct = state.listings.find((listing) => listing.id === listingId);
-    if (direct) return direct;
-    return state.listings[0] || createDefaultListing();
+    if (listingId) {
+      const direct = store.getListingById(listingId);
+      if (direct) return direct;
+    }
+    const fallback = store.getFirstListing();
+    if (fallback) return fallback;
+    return createDefaultListing();
   }
 
   function createDefaultListing() {
-    const existing = state.listings.find((listing) => listing.id === "local-hotspot");
+    const existing = store.getListingById("local-hotspot");
     if (existing) return existing;
 
     const listing = {
@@ -176,21 +228,21 @@ function createHotspotService({
       updatedAt: ts(),
     };
 
-    state.listings.unshift(listing);
-    persist();
+    store.upsertListing(listing);
     return listing;
   }
 
   function ensureDemoListings() {
     for (const demo of DEMO_HOTSPOTS) {
-      const existing = state.listings.find((listing) => listing.id === demo.id);
+      const existing = store.getListingById(demo.id);
       if (existing) {
         existing.demo = true;
         existing.durationOptions = demo.durationOptions;
+        store.upsertListing(existing);
         continue;
       }
 
-      state.listings.push({
+      const listing = {
         ...demo,
         ssid: normalizeSSID(demo.ssid || demo.name),
         status: "available",
@@ -207,10 +259,9 @@ function createHotspotService({
         real: false,
         createdAt: ts(),
         updatedAt: ts(),
-      });
+      };
+      store.upsertListing(listing);
     }
-
-    persist();
   }
 
   function addTransition(session, status, metadata = {}) {
@@ -223,7 +274,7 @@ function createHotspotService({
   }
 
   async function refreshListingArtifacts(listing) {
-    const related = state.sessions.filter((session) => session.listing_id === listing.id);
+    const related = store.getSessionsByListing(listing.id);
     const completed = related.filter((session) => ["expired", "disconnected", "refunded"].includes(session.status));
     const refunded = related.filter((session) => session.status === "refunded");
     const uptimeScore = completed.length
@@ -280,6 +331,7 @@ function createHotspotService({
       disconnectRate: reputationPayload.disconnectRate,
     };
     listing.updatedAt = ts();
+    store.upsertListing(listing);
   }
 
   async function persistSessionArtifact(session, artifactKind, extra = {}) {
@@ -324,6 +376,7 @@ function createHotspotService({
       listingId: session.listing_id,
     });
 
+    if (!session.filecoin) session.filecoin = { latestCid: null, artifacts: [] };
     session.filecoin.latestCid = artifact.cid;
     session.filecoin.artifacts.push(artifact);
     return artifact;
@@ -358,19 +411,11 @@ function createHotspotService({
       updatedAt: ts(),
     };
 
-    const index = state.listings.findIndex((listing) => listing.id === normalized.id);
-    let storedListing = normalized;
-    if (index >= 0) {
-      state.listings[index] = { ...state.listings[index], ...normalized };
-      storedListing = state.listings[index];
-    } else {
-      state.listings.unshift(normalized);
-      storedListing = normalized;
-    }
-
-    await refreshListingArtifacts(storedListing);
-    persist();
-    return storedListing;
+    const existing = store.getListingById(normalized.id);
+    const merged = existing ? { ...existing, ...normalized } : normalized;
+    store.upsertListing(merged);
+    await refreshListingArtifacts(merged);
+    return merged;
   }
 
   async function createSession({
@@ -396,22 +441,34 @@ function createHotspotService({
 
     const existing = getActiveSessionForIp(cleanIp);
     if (existing) {
-      existing.minutes_purchased += Number(minutes);
-      existing.paid_until = ts(new Date(existing.paid_until).getTime() + Number(minutes) * 60 * 1000);
-      existing.amount_lamports += amountLamports;
-      existing.amount_sol = formatSol(existing.amount_lamports);
-      existing.tx_hash = txHash || existing.tx_hash;
-      existing.payment_reference = paymentReference || existing.payment_reference;
-      existing.payment_explorer_url = paymentExplorerUrl || existing.payment_explorer_url;
-      addTransition(existing, "active", {
-        reason: "extended",
-        addedMinutes: Number(minutes),
-        source,
+      return withSessionLock(existing.session_id, async () => {
+        // Pull latest committed state from DB and merge into the cached
+        // reference so this fn sees prior fns' increments while keeping the
+        // same JS object identity for waiting callers.
+        const latest = store.getSessionById(existing.session_id);
+        if (latest && new Date(latest.updatedAt).getTime() > new Date(existing.updatedAt).getTime()) {
+          for (const key of Object.keys(latest)) existing[key] = latest[key];
+        }
+
+        existing.minutes_purchased += Number(minutes);
+        existing.paid_until = ts(new Date(existing.paid_until).getTime() + Number(minutes) * 60 * 1000);
+        existing.amount_lamports += amountLamports;
+        existing.amount_sol = formatSol(existing.amount_lamports);
+        existing.tx_hash = txHash || existing.tx_hash;
+        existing.payment_reference = paymentReference || existing.payment_reference;
+        existing.payment_explorer_url = paymentExplorerUrl || existing.payment_explorer_url;
+        existing.updatedAt = ts();
+        addTransition(existing, "active", {
+          reason: "extended",
+          addedMinutes: Number(minutes),
+          source,
+        });
+        persistSession(existing);
+        await persistSessionArtifact(existing, "session-extension", { addedMinutes: Number(minutes) });
+        persistSession(existing);
+        await refreshListingArtifacts(listing);
+        return existing;
       });
-      await persistSessionArtifact(existing, "session-extension", { addedMinutes: Number(minutes) });
-      await refreshListingArtifacts(listing);
-      persist();
-      return existing;
     }
 
     const session = {
@@ -456,10 +513,10 @@ function createHotspotService({
       sessionType,
     });
 
-    state.sessions.unshift(session);
+    persistSession(session);
     await persistSessionArtifact(session, "session-receipt", { source });
+    persistSession(session);
     await refreshListingArtifacts(listing);
-    persist();
     return session;
   }
 
@@ -493,10 +550,13 @@ function createHotspotService({
       createdAt: ts(),
       expiresAt: ts(now() + 15 * 60 * 1000),
       status: "pending",
+      txHash: null,
+      paymentExplorerUrl: null,
+      fulfilledSessionId: null,
+      updatedAt: null,
     };
 
-    state.intents.unshift(intent);
-    persist();
+    store.upsertIntent(intent);
     return intent;
   }
 
@@ -536,49 +596,41 @@ function createHotspotService({
 
   function listSessions() {
     const current = now();
-    return sortNewestFirst(
-      state.sessions.map((session) => {
-        const paidUntil = new Date(session.paid_until).getTime();
-        const active = session.status === "active" && paidUntil > current;
-        return {
-          ...session,
-          active,
-          seconds_remaining: active ? Math.max(0, Math.floor((paidUntil - current) / 1000)) : 0,
-        };
-      }),
-      "started_at"
-    );
+    return store.getAllSessions().map((row) => {
+      const session = bindSession(row);
+      const paidUntil = new Date(session.paid_until).getTime();
+      const active = session.status === "active" && paidUntil > current;
+      return {
+        ...session,
+        active,
+        seconds_remaining: active ? Math.max(0, Math.floor((paidUntil - current) / 1000)) : 0,
+      };
+    });
   }
 
   async function expireSessions() {
-    const current = now();
-    const expired = state.sessions.filter(
-      (session) =>
-        session.status === "active" &&
-        new Date(session.paid_until).getTime() <= current
-    );
-
+    const expired = store.getExpiredActiveSessions(ts());
     if (expired.length === 0) return;
 
-    for (const session of expired) {
-      session.ended_at = ts(current);
+    for (const row of expired) {
+      const session = bindSession(row);
+      session.ended_at = ts();
       session.minutes_used = session.minutes_purchased;
+      session.updatedAt = ts();
       addTransition(session, "expired", { reason: "time_elapsed" });
+      persistSession(session);
       await persistSessionArtifact(session, "session-closeout", { reason: "expired" });
+      persistSession(session);
       const listing = pickListing(session.listing_id);
       await refreshListingArtifacts(listing);
     }
-
-    persist();
   }
 
   async function disconnectSessionByIp(ip, reason = "manual_disconnect") {
     const cleanIp = normalizeIp(ip);
-    const session = state.sessions.find(
-      (item) => item.ip === cleanIp && ["active", "paid"].includes(item.status)
-    );
-
-    if (!session) return null;
+    const row = store.getGatedSessionForIp(cleanIp);
+    if (!row) return null;
+    const session = bindSession(row);
 
     const elapsedMs = Math.max(0, now() - new Date(session.started_at).getTime());
     const purchasedMs = Math.max(1, Number(session.minutes_purchased || 0) * 60 * 1000);
@@ -625,12 +677,24 @@ function createHotspotService({
           status: "failed",
           error: error.message,
         };
+        store.insertPendingRefund({
+          sessionId: session.session_id,
+          destination: session.buyer_wallet,
+          amountLamports: refundLamports,
+          memo: `netra-refund:${session.session_id}`,
+          attempts: 1,
+          lastError: error.message,
+          status: "pending",
+          nextAttemptAt: now() + REFUND_INITIAL_BACKOFF_MS,
+          createdAt: ts(),
+        });
       }
     }
 
     session.minutes_used = minutesUsed;
     session.ended_at = ts();
     session.paid_until = ts(now());
+    session.updatedAt = ts();
     session.refund = {
       amountLamports: refundLamports,
       amountSol: formatSol(refundLamports),
@@ -651,14 +715,15 @@ function createHotspotService({
       refundTxHash: refundResult.signature || null,
     });
 
+    persistSession(session);
     await persistSessionArtifact(session, "session-closeout", {
       reason,
       minutesUsed,
       minutesRemaining,
       refundStatus: refundResult.status,
     });
+    persistSession(session);
     await refreshListingArtifacts(pickListing(session.listing_id));
-    persist();
 
     return {
       minutes_used: minutesUsed,
@@ -677,30 +742,97 @@ function createHotspotService({
     const cleanIp = normalizeIp(ip);
     const session = getActiveSessionForIp(cleanIp);
     if (!session) return;
-    session.bytes_forwarded += Number(bytes || 0);
-    session.updatedAt = ts();
+    store.incrementSessionBytes(session.session_id, bytes, ts());
+  }
+
+  async function processPendingRefunds() {
+    const due = store.getDuePendingRefunds(now());
+    if (due.length === 0) return;
+
+    for (const entry of due) {
+      try {
+        const result = await sendRefund({
+          destination: entry.destination,
+          amountLamports: entry.amountLamports,
+          memo: entry.memo,
+        });
+        entry.attempts += 1;
+        entry.status = "sent";
+        entry.completedAt = ts();
+        entry.signature = result.signature || null;
+        entry.explorerUrl = result.explorerUrl || null;
+        entry.sourceWallet = result.sourceWallet || null;
+        entry.lastError = null;
+        store.updatePendingRefund(entry);
+
+        const session = getSessionById(entry.sessionId);
+        if (session && session.refund) {
+          session.refund.status = "sent";
+          session.refund.txHash = result.signature || null;
+          session.refund.explorerUrl = result.explorerUrl || null;
+          session.refund.sourceWallet = result.sourceWallet || null;
+          session.refund.error = null;
+          addTransition(session, "refunded", {
+            reason: "retry_succeeded",
+            attempt: entry.attempts,
+          });
+          session.updatedAt = ts();
+          persistSession(session);
+        }
+      } catch (error) {
+        entry.attempts += 1;
+        entry.lastError = error.message;
+        if (entry.attempts >= REFUND_MAX_ATTEMPTS) {
+          entry.status = "permanently_failed";
+          const session = getSessionById(entry.sessionId);
+          if (session && session.refund) {
+            session.refund.status = "permanently_failed";
+            session.refund.error = error.message;
+            session.updatedAt = ts();
+            persistSession(session);
+          }
+          console.error(
+            `[refund] permanently failed for session ${entry.sessionId} after ${entry.attempts} attempts: ${error.message}`
+          );
+        } else {
+          const backoff = REFUND_INITIAL_BACKOFF_MS * Math.pow(2, entry.attempts - 1);
+          entry.nextAttemptAt = now() + backoff;
+        }
+        store.updatePendingRefund(entry);
+      }
+    }
+  }
+
+  function listPendingRefunds() {
+    return store.getAllPendingRefunds().map(({ rowId, ...rest }) => rest);
   }
 
   function removeListing(id) {
-    const index = state.listings.findIndex((listing) => listing.id === id);
-    if (index < 0) return false;
-    state.listings.splice(index, 1);
-    persist();
-    return true;
+    return store.deleteListing(id);
   }
 
   function pruneIntents() {
-    const current = now();
-    const before = state.intents.length;
-    state.intents = state.intents.filter((intent) => new Date(intent.expiresAt).getTime() > current);
-    if (state.intents.length !== before) persist();
+    store.deleteExpiredIntents(ts());
   }
 
   async function fulfillIntent({ reference, signature, buyerWallet }) {
     pruneIntents();
-    const intent = state.intents.find((candidate) => candidate.reference === reference);
+    const intent = store.getIntentByReference(reference);
     if (!intent) {
       throw new Error("Unknown or expired payment reference");
+    }
+
+    if (intent.status === "paid" && intent.fulfilledSessionId) {
+      const existingSession = getSessionById(intent.fulfilledSessionId);
+      if (existingSession) {
+        const payment = {
+          signature: intent.txHash,
+          buyerWallet: intent.buyerWallet,
+          explorerUrl: intent.paymentExplorerUrl || null,
+          reference,
+        };
+        return { intent, payment, session: existingSession };
+      }
     }
 
     const payment = await verifyPayment({
@@ -713,7 +845,9 @@ function createHotspotService({
     intent.status = "paid";
     intent.buyerWallet = buyerWallet || payment.buyerWallet;
     intent.txHash = signature;
+    intent.paymentExplorerUrl = payment.explorerUrl || null;
     intent.updatedAt = ts();
+    store.upsertIntent(intent);
 
     if (intent.action === "purchase") {
       const session = await createSession({
@@ -729,11 +863,12 @@ function createHotspotService({
         tier: intent.tier,
         source: "x402-api",
       });
-      persist();
+      intent.fulfilledSessionId = session.session_id;
+      store.upsertIntent(intent);
       return { intent, payment, session };
     }
 
-    const current = state.sessions.find((session) => session.session_id === intent.sessionId);
+    const current = getSessionById(intent.sessionId);
     if (!current) {
       throw new Error("Session to extend was not found");
     }
@@ -751,12 +886,14 @@ function createHotspotService({
       tier: intent.tier,
       source: "x402-api",
     });
-    persist();
+    intent.fulfilledSessionId = session.session_id;
+    store.upsertIntent(intent);
     return { intent, payment, session };
   }
 
   function getDashboard() {
     const sessions = listSessions();
+    const listings = store.getAllListings();
     const active = sessions.filter((session) => session.active);
     const completed = sessions.filter((session) => !session.active);
     const refunded = sessions.filter((session) => session.status === "refunded");
@@ -767,16 +904,16 @@ function createHotspotService({
 
     return {
       summary: {
-        totalListings: state.listings.length,
+        totalListings: listings.length,
         activeSessions: active.length,
         completedSessions: completed.length,
         totalEarnedSol,
         refunds: refunded.length,
       },
-      listings: sortNewestFirst(state.listings),
+      listings: sortNewestFirst(listings),
       sessions,
       recentArtifacts: sessions
-        .flatMap((session) => session.filecoin.artifacts.map((artifact) => ({
+        .flatMap((session) => (session.filecoin?.artifacts || []).map((artifact) => ({
           sessionId: session.session_id,
           listingId: session.listing_id,
           kind: artifact.kind,
@@ -795,11 +932,18 @@ function createHotspotService({
       status: "ok",
       active_sessions: sessions.filter((session) => session.active).length,
       total_sessions: sessions.length,
-      total_listings: state.listings.length,
+      total_listings: store.getAllListings().length,
       x402_ready: Boolean(normalizeWallet(hostWallet)),
       filecoin_synapse_ready: Boolean(process.env.FILECOIN_PRIVATE_KEY),
       uptime_seconds: Math.floor(process.uptime()),
     };
+  }
+
+  function close() {
+    if (typeof artifactStore.stopUploadWorker === "function") {
+      artifactStore.stopUploadWorker();
+    }
+    store.close();
   }
 
   createDefaultListing();
@@ -808,6 +952,7 @@ function createHotspotService({
   return {
     buildIntent,
     buildX402Challenge,
+    close,
     createDefaultListing,
     createSession,
     disconnectSessionByIp,
@@ -816,10 +961,12 @@ function createHotspotService({
     getActiveSessionForIp,
     getDashboard,
     getHealth,
-    listListings: () => sortNewestFirst(state.listings),
+    listListings: () => sortNewestFirst(store.getAllListings()),
+    listPendingRefunds,
     listSessions,
     normalizeIp,
     pickListing,
+    processPendingRefunds,
     pruneIntents,
     recordForwardedBytes,
     removeListing,
