@@ -1,0 +1,41 @@
+{
+  "name": "netra-agent-sdk",
+  "version": "0.1.0",
+  "description": "Embed in autonomous agents (drones, AVs, robots) for self-paying Netra hotspot uplink via Solana x402.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test --import tsx test/*.test.ts",
+    "demo": "tsx examples/drone-demo.ts",
+    "prepare": "npm run build"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "netra",
+    "x402",
+    "solana",
+    "hotspot",
+    "agent",
+    "drone",
+    "autonomous"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4",
+    "axios": "^1.7.0",
+    "bonjour-service": "^1.2.0",
+    "bs58": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}
