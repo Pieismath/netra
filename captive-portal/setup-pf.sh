@@ -54,63 +54,112 @@ done
 
 BRIDGE=""
 PORTAL_IP=""
-FALLBACK_BRIDGE=""
-FALLBACK_IP=""
-FALLBACK_SCORE=-1
 
-echo "Scanning network interfaces..."
+bridge_info() {
+  ifconfig "$1" 2>/dev/null || true
+}
 
-# Prefer the active Internet Sharing bridge. Some Macs keep older inactive
-# bridge interfaces around, and picking the first one breaks the captive rules.
-for iface in $(printf '%s\n' bridge100 bridge101 bridge0 $(ifconfig -l 2>/dev/null | tr ' ' '\n' | grep '^bridge' | sort) | awk '!seen[$0]++'); do
-  [ -n "$iface" ] || continue
+bridge_ip() {
+  printf '%s\n' "$1" | awk '/inet /{print $2; exit}'
+}
 
-  info=$(ifconfig "$iface" 2>/dev/null || true)
-  [ -n "$info" ] || continue
+bridge_status() {
+  printf '%s\n' "$1" | awk '/status:/{print $2; exit}'
+}
 
-  ip=$(printf '%s\n' "$info" | awk '/inet /{print $2; exit}')
-  status=$(printf '%s\n' "$info" | awk '/status:/{print $2; exit}')
-  has_ap1=$(printf '%s\n' "$info" | grep -c 'member: ap1' || true)
-  score=0
-  [ "$iface" = "bridge100" ] && score=$((score + 3))
-  [ "$has_ap1" -gt 0 ] && score=$((score + 5))
+bridge_members() {
+  printf '%s\n' "$1" | awk -F': ' '/member:/ {print $2}' | awk '{print $1}' | tr '\n' ',' | sed 's/,$//'
+}
 
-  echo "  $iface → ${ip:-no IP} (${status:-unknown})"
+probe_ip() {
+  # Quick ping (1 packet, 1s timeout) to confirm the IP is bound and the
+  # interface is actually up on this host. macOS ping(8): -W is in ms, -t in s.
+  ping -c 1 -W 1000 -t 2 "$1" >/dev/null 2>&1
+}
 
-  if [ -n "$ip" ] && [ "$score" -gt "$FALLBACK_SCORE" ]; then
-    FALLBACK_BRIDGE="$iface"
-    FALLBACK_IP="$ip"
-    FALLBACK_SCORE="$score"
+# Allow operator to short-circuit auto-detection when there are multiple
+# bridges or when the heuristic guesses wrong on a particular Mac.
+if [ -n "${BRIDGE_IF_OVERRIDE:-}" ]; then
+  info=$(bridge_info "$BRIDGE_IF_OVERRIDE")
+  if [ -z "$info" ]; then
+    echo "ERROR: BRIDGE_IF_OVERRIDE='$BRIDGE_IF_OVERRIDE' — interface does not exist."
+    exit 1
   fi
-
-  if [ -n "$ip" ] && [ "$status" = "active" ]; then
-    BRIDGE="$iface"
-    PORTAL_IP="$ip"
-    break
+  ip=$(bridge_ip "$info")
+  if [ -z "$ip" ]; then
+    echo "ERROR: BRIDGE_IF_OVERRIDE='$BRIDGE_IF_OVERRIDE' has no IPv4 address."
+    exit 1
   fi
-done
+  BRIDGE="$BRIDGE_IF_OVERRIDE"
+  PORTAL_IP="$ip"
+  echo "Using BRIDGE_IF_OVERRIDE=$BRIDGE → $PORTAL_IP"
+else
+  echo "Scanning network interfaces..."
 
-if [ -z "$BRIDGE" ] && [ -n "$FALLBACK_BRIDGE" ]; then
-  BRIDGE="$FALLBACK_BRIDGE"
-  PORTAL_IP="$FALLBACK_IP"
-fi
+  CAND_IFACES=()
+  CAND_IPS=()
+  CAND_MEMBERS=()
 
-if [ -z "$BRIDGE" ]; then
-  echo ""
-  echo "ERROR: No Internet Sharing bridge interface found."
-  echo ""
-  echo "All interfaces on this machine:"
-  ifconfig -l | tr ' ' '\n'
-  echo ""
-  echo "Troubleshooting:"
-  echo "  1. Make sure Internet Sharing is ON in System Settings → General → Sharing"
-  echo "  2. Make sure Wi-Fi is checked in 'To devices using'"
-  echo "  3. Try toggling Internet Sharing OFF then ON again"
-  echo "  4. If you see a bridge interface above with no IP, run:"
-  echo "       sudo ifconfig <bridgeX> 192.168.3.1 netmask 255.255.255.0 up"
-  echo "     then re-run this script."
-  echo ""
-  exit 1
+  for iface in $(ifconfig -l 2>/dev/null | tr ' ' '\n' | grep '^bridge' | sort -u); do
+    [ -n "$iface" ] || continue
+    info=$(bridge_info "$iface")
+    [ -n "$info" ] || continue
+
+    ip=$(bridge_ip "$info")
+    status=$(bridge_status "$info")
+    members=$(bridge_members "$info")
+
+    echo "  $iface → ${ip:-no IP} (${status:-unknown}) members=[${members:-none}]"
+
+    [ -n "$ip" ] || continue
+    [ "$status" = "active" ] || continue
+
+    if probe_ip "$ip"; then
+      CAND_IFACES+=("$iface")
+      CAND_IPS+=("$ip")
+      CAND_MEMBERS+=("${members:-none}")
+    else
+      echo "    skipped: ping to $ip failed (interface not carrying traffic)"
+    fi
+  done
+
+  case "${#CAND_IFACES[@]}" in
+    0)
+      echo ""
+      echo "ERROR: No active bridge interface with a reachable IP found."
+      echo ""
+      echo "All interfaces on this machine:"
+      ifconfig -l | tr ' ' '\n'
+      echo ""
+      echo "Troubleshooting:"
+      echo "  1. Make sure Internet Sharing is ON in System Settings → General → Sharing"
+      echo "  2. Make sure Wi-Fi is checked in 'To devices using'"
+      echo "  3. Try toggling Internet Sharing OFF then ON again"
+      echo "  4. If you see a bridge interface above with no IP, run:"
+      echo "       sudo ifconfig <bridgeX> 192.168.3.1 netmask 255.255.255.0 up"
+      echo "     then re-run this script."
+      echo "  5. If detection is wrong, force a specific bridge with:"
+      echo "       sudo BRIDGE_IF_OVERRIDE=bridgeX ./setup-pf.sh"
+      echo ""
+      exit 1
+      ;;
+    1)
+      BRIDGE="${CAND_IFACES[0]}"
+      PORTAL_IP="${CAND_IPS[0]}"
+      ;;
+    *)
+      echo ""
+      echo "ERROR: Multiple active bridge interfaces — cannot disambiguate:"
+      for i in "${!CAND_IFACES[@]}"; do
+        echo "  ${CAND_IFACES[$i]} → ${CAND_IPS[$i]}  members=[${CAND_MEMBERS[$i]}]"
+      done
+      echo ""
+      echo "Re-run with an explicit choice:"
+      echo "  sudo BRIDGE_IF_OVERRIDE=<iface> ./setup-pf.sh"
+      echo ""
+      exit 1
+      ;;
+  esac
 fi
 
 echo "Bridge interface : $BRIDGE"
@@ -211,19 +260,28 @@ echo "Written: $FILTER_ANCHOR"
 # ── Patch /etc/pf.conf ────────────────────────────────────────────────────────
 
 PF_CONF="/etc/pf.conf"
-MARKER="# HotspotDEX anchors"
+PF_CONF_NEW="/etc/pf.conf.new"
+NETRA_BACKUP="/etc/pf.conf.netra-backup-$(date +%s)"
+PF_VALIDATE_ERR="/tmp/netra-pfctl-validate.err"
 
 if grep -q "hotspotdex" "$PF_CONF" 2>/dev/null; then
-  echo "pf.conf already contains Netra anchors — rewriting to ensure correct placement"
+  echo "pf.conf already contains Netra anchors — rewriting with validation"
 fi
 
-# Always write a clean, known-good pf.conf with Netra anchors in the
-# correct position (rdr-anchor after nat-anchor "com.apple/*", filter anchor
-# after the com.apple anchor block). This avoids the regex-patching approach
-# which can break the file if the comment block layout differs.
-cp "$PF_CONF" "${PF_CONF}.hotspotdex.bak" 2>/dev/null || true
+# Always create a timestamped backup before touching anything. Keep the
+# legacy backup name as well so teardown-pf.sh continues to work.
+if [ -f "$PF_CONF" ]; then
+  cp "$PF_CONF" "$NETRA_BACKUP"
+  echo "Backup: $NETRA_BACKUP"
+  cp "$PF_CONF" "${PF_CONF}.hotspotdex.bak"
+fi
 
-cat > "$PF_CONF" << PFEOF
+# Stage a clean, known-good pf.conf with Netra anchors in the correct
+# position (rdr-anchor after nat-anchor "com.apple/*", filter anchor after
+# the com.apple anchor block). Write to a sibling file first so we can
+# validate before swapping — if validation fails the live pf.conf is
+# untouched and the staged file is left for inspection.
+cat > "$PF_CONF_NEW" << PFEOF
 #
 # Default PF configuration file.
 #
@@ -257,18 +315,35 @@ anchor "hotspotdex"
 load anchor "hotspotdex" from "$FILTER_ANCHOR"
 PFEOF
 
-echo "Written: $PF_CONF"
+# Parse-only validation. pfctl -nf checks syntax and rule semantics
+# without loading anything into the kernel. If this fails, /etc/pf.conf
+# is still the previous (working) version.
+if ! pfctl -nf "$PF_CONF_NEW" 2>"$PF_VALIDATE_ERR"; then
+  echo ""
+  echo "ERROR: pf.conf validation failed. /etc/pf.conf is unchanged."
+  echo "Staged file left at $PF_CONF_NEW for inspection."
+  echo "pfctl errors:"
+  sed 's/^/  /' "$PF_VALIDATE_ERR"
+  exit 1
+fi
+rm -f "$PF_VALIDATE_ERR"
+
+# Atomic swap on the same filesystem.
+mv "$PF_CONF_NEW" "$PF_CONF"
+echo "Written: $PF_CONF (validated)"
 
 # ── Enable pf and reload rules ────────────────────────────────────────────────
 
 pfctl -e 2>/dev/null && echo "pf enabled" || echo "pf was already enabled"
-if pfctl -f "$PF_CONF" 2>&1; then
+PF_LOAD_ERR="/tmp/netra-pfctl-load.err"
+if pfctl -f "$PF_CONF" 2>"$PF_LOAD_ERR"; then
   echo "pf rules loaded"
+  rm -f "$PF_LOAD_ERR"
 else
   echo ""
-  echo "WARN: pf.conf reload had errors — loading anchors directly instead..."
-  pfctl -a hotspotdex-nat -f "$NAT_ANCHOR" && echo "  nat anchor loaded"
-  pfctl -a hotspotdex    -f "$FILTER_ANCHOR" && echo "  filter anchor loaded"
+  echo "ERROR: pf rules failed to load (file passed validation but kernel rejected them):"
+  sed 's/^/  /' "$PF_LOAD_ERR"
+  exit 1
 fi
 
 # ── Verify ────────────────────────────────────────────────────────────────────

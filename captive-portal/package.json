@@ -4,7 +4,8 @@
   "description": "Netra captive portal — DNS redirect + HTTP payment wall + pf firewall management",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "bs58": "^4.0.0",

@@ -32,8 +32,8 @@ const path      = require("path");
 const https     = require("https");
 const fs        = require("fs");
 const { v4: uuidv4 } = require("uuid");
-const { execSync, exec } = require("child_process");
-const { randomBytes } = require("crypto");
+const { execSync, execFile } = require("child_process");
+const { randomBytes, timingSafeEqual } = require("crypto");
 const bs58      = require("bs58");
 const QRCode    = require("qrcode");
 const dns2      = require("dns2");
@@ -79,8 +79,10 @@ if (DEMO_BUYER_PRIVKEY) {
   try {
     demoBuyerKeypair = Keypair.fromSecretKey(bs58.decode(DEMO_BUYER_PRIVKEY));
     console.log(`[Portal] Demo buyer wallet: ${demoBuyerKeypair.publicKey.toBase58()}`);
-  } catch (err) {
-    console.error("[Portal] DEMO_BUYER_PRIVKEY is set but invalid:", err.message);
+  } catch {
+    // Never log err / err.message — error text from base58 / Keypair can
+    // include partial key material.
+    console.error("[Portal] DEMO_BUYER_PRIVKEY invalid format");
   }
 }
 
@@ -288,6 +290,13 @@ const captiveReleasedIPs = new Set();
  * Value: { ip, minutes, created_at, activated }
  */
 const pendingPayments = new Map();
+
+/**
+ * Rate-limit buckets for /payment-status: ip → lastRequestMs.
+ * Swept periodically to bound memory.
+ */
+const statusRateBuckets = new Map();
+
 const portalDebugEvents = [];
 
 /**
@@ -322,6 +331,25 @@ function cancelSessionExpiry(ip) {
   sessionTimers.delete(ip);
 }
 
+// ─── Periodic sweep — drop stale pending payments and rate-limit buckets ──────
+// pendingPayments and statusRateBuckets are otherwise unbounded; without this
+// they'd grow indefinitely as references and client IPs accumulate. sessionTimers
+// self-cleans inside the timer callback and on /disconnect.
+
+const PENDING_TTL_MS      = 15 * 60 * 1000;
+const RATE_BUCKET_TTL_MS  = 10 * 60 * 1000;
+const SWEEP_INTERVAL_MS   = 60 * 1000;
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of pendingPayments) {
+    if (now - val.created_at > PENDING_TTL_MS) pendingPayments.delete(key);
+  }
+  for (const [ip, last] of statusRateBuckets) {
+    if (now - last > RATE_BUCKET_TTL_MS) statusRateBuckets.delete(ip);
+  }
+}, SWEEP_INTERVAL_MS).unref();
+
 // ─── Solana Pay helpers ───────────────────────────────────────────────────────
 
 /** Generate a random 32-byte base58 public key to use as a Solana Pay reference. */
@@ -355,44 +383,78 @@ async function findReferenceOnChain(referenceBase58) {
 }
 
 // ─── Firewall helpers (pfctl) ─────────────────────────────────────────────────
+//
+// SECURITY: pfctl is invoked via execFile (no shell), and `ip` is passed as a
+// separate argv element so shell metacharacters cannot inject extra commands.
+// We additionally reject anything that doesn't look like a dotted IPv4 octet
+// quad before ever spawning a process.
 
-function pfAdd(ip) {
-  return new Promise((resolve) => {
-    const cmd = [
-      `sudo pfctl -a hotspotdex -t allowed_clients -T add ${ip}`,
-      `sudo pfctl -a hotspotdex-nat -t paid_bypass -T add ${ip}`,
-    ].join(" ; ");
-    exec(cmd, (err, _, stderr) => {
-      if (err) {
-        console.error(`[pf] WARN: could not add ${ip} — ${(stderr || "").trim()}`);
-        // Don't hard-fail; session is still tracked in memory
-      } else {
-        console.log(`[pf] Opened firewall for ${ip}`);
-      }
-      resolve();
+const IPV4_OCTET_RE = /^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+const IPV4_RE = new RegExp(
+  `^${IPV4_OCTET_RE.source.slice(1, -1)}(?:\\.${IPV4_OCTET_RE.source.slice(1, -1)}){3}$`
+);
+
+function isValidClientIP(ip) {
+  return typeof ip === "string" && IPV4_RE.test(ip);
+}
+
+function pfctlExec(args) {
+  return new Promise((resolve, reject) => {
+    execFile("sudo", ["pfctl", ...args], (err, _stdout, stderr) => {
+      if (err) reject(new Error((stderr || err.message || "pfctl failed").trim()));
+      else resolve();
     });
   });
 }
 
-function pfRemove(ip) {
-  return new Promise((resolve) => {
-    const cmd = [
-      `sudo pfctl -a hotspotdex -t allowed_clients -T delete ${ip}`,
-      `sudo pfctl -a hotspotdex-nat -t paid_bypass -T delete ${ip}`,
-    ].join(" ; ");
-    exec(cmd, (err, _, stderr) => {
-      if (err) console.error(`[pf] WARN: could not remove ${ip} — ${(stderr || "").trim()}`);
-      else console.log(`[pf] Closed firewall for ${ip}`);
-      resolve();
-    });
-  });
+async function pfAdd(ip) {
+  if (!isValidClientIP(ip)) {
+    console.error(`[pf] WARN: refusing to add invalid IP ${JSON.stringify(ip)}`);
+    return;
+  }
+  const ops = [
+    ["-a", "hotspotdex",     "-t", "allowed_clients", "-T", "add", ip],
+    ["-a", "hotspotdex-nat", "-t", "paid_bypass",     "-T", "add", ip],
+  ];
+  const errors = [];
+  for (const args of ops) {
+    try { await pfctlExec(args); } catch (err) { errors.push(err.message); }
+  }
+  if (errors.length) {
+    console.error(`[pf] WARN: could not add ${ip} — ${errors.join(" / ")}`);
+    // Don't hard-fail; session is still tracked in memory
+  } else {
+    console.log(`[pf] Opened firewall for ${ip}`);
+  }
+}
+
+async function pfRemove(ip) {
+  if (!isValidClientIP(ip)) {
+    console.error(`[pf] WARN: refusing to remove invalid IP ${JSON.stringify(ip)}`);
+    return;
+  }
+  const ops = [
+    ["-a", "hotspotdex",     "-t", "allowed_clients", "-T", "delete", ip],
+    ["-a", "hotspotdex-nat", "-t", "paid_bypass",     "-T", "delete", ip],
+  ];
+  const errors = [];
+  for (const args of ops) {
+    try { await pfctlExec(args); } catch (err) { errors.push(err.message); }
+  }
+  if (errors.length) {
+    console.error(`[pf] WARN: could not remove ${ip} — ${errors.join(" / ")}`);
+  } else {
+    console.log(`[pf] Closed firewall for ${ip}`);
+  }
 }
 
 // ─── HTTP Server ──────────────────────────────────────────────────────────────
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Tighten body limit from the 100kb express default — we only ever take
+// short JSON payloads (a base58 reference, a signature, a CSRF token).
+app.use(express.json({ limit: "32kb" }));
 app.use(express.static(path.join(__dirname, "public")));
 const portalIndexPath = path.join(__dirname, "public", "index.html");
 const solanaWeb3BrowserPath = path.join(
@@ -521,6 +583,43 @@ app.get("/payment-qr.svg", async (req, res) => {
   }
 });
 
+// ── CSRF helpers (for /payment-finalize) ──────────────────────────────────────
+//
+// /payment-finalize triggers real on-chain verification + firewall changes, so
+// it gets two layers of CSRF defence:
+//   1. Origin/Referer must point at the portal IP (or a configured trusted
+//      origin). Cross-site form posts can't forge these in modern browsers.
+//   2. A 32-byte random token issued by GET /payment-request and stored on
+//      the pendingPayments entry must be echoed back. Each reference has its
+//      own token, so cross-reference replay is impossible.
+
+const PORTAL_ALLOWED_HOSTS = new Set([PORTAL_IP]);
+if (SECURE_PORTAL_HOST) PORTAL_ALLOWED_HOSTS.add(SECURE_PORTAL_HOST);
+
+function isSameOriginRequest(req) {
+  const header = req.headers.origin || req.headers.referer;
+  if (!header) return false;
+  let hostname;
+  try {
+    hostname = new URL(header).hostname;
+  } catch {
+    return false;
+  }
+  return PORTAL_ALLOWED_HOSTS.has(hostname);
+}
+
+function generateCsrfToken() {
+  return randomBytes(32).toString("base64url");
+}
+
+function safeTokenEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
 // ── GET /payment-request?minutes=N ────────────────────────────────────────────
 //
 // Creates a Solana Pay transfer-request URL with a unique reference key.
@@ -558,6 +657,7 @@ app.get("/payment-request", (req, res) => {
 
       const ref = accept.extra.reference;
       const solanaPayUrl = challengeToSolanaPayUrl(accept);
+      const csrfToken = generateCsrfToken();
       pendingPayments.set(ref, {
         ip,
         minutes,
@@ -567,13 +667,13 @@ app.get("/payment-request", (req, res) => {
         memo: accept.memo || `netra:${ref}`,
         description: accept.description || "Buy hotspot access programmatically with Solana.",
         solanaPayUrl,
+        csrfToken,
         created_at: Date.now(),
         activated: false,
       });
 
-      for (const [key, val] of pendingPayments) {
-        if (Date.now() - val.created_at > 10 * 60 * 1000) pendingPayments.delete(key);
-      }
+      // Eviction is handled by the periodic sweep — no need to walk the map here.
+
       const checkoutUrl = buildCheckoutUrl({
         reference: ref,
         listingId,
@@ -592,6 +692,7 @@ app.get("/payment-request", (req, res) => {
         amount: Number(accept.amount || 0) / 1e9,
         minutes,
         listingId,
+        csrfToken,
         challenge,
       });
     })
@@ -727,12 +828,28 @@ async function fulfillPendingPayment({ reference, signature, buyerWallet }) {
 }
 
 app.post("/payment-finalize", async (req, res) => {
-  const reference = String(req.body?.reference || "");
-  const signature = String(req.body?.signature || "");
+  if (!isSameOriginRequest(req)) {
+    return res.status(403).json({ error: "cross-origin request rejected" });
+  }
+
+  const reference   = String(req.body?.reference || "");
+  const signature   = String(req.body?.signature || "");
+  const csrfToken   = String(req.body?.csrfToken || "");
   const buyerWallet = req.body?.buyerWallet ? String(req.body.buyerWallet) : null;
 
   if (!reference || !signature) {
     return res.status(400).json({ error: "reference and signature are required" });
+  }
+  if (!csrfToken) {
+    return res.status(403).json({ error: "csrfToken required" });
+  }
+
+  const pending = pendingPayments.get(reference);
+  if (!pending) {
+    return res.status(404).json({ error: "unknown or expired reference" });
+  }
+  if (!safeTokenEqual(pending.csrfToken, csrfToken)) {
+    return res.status(403).json({ error: "csrfToken invalid" });
   }
 
   try {
@@ -854,8 +971,26 @@ app.post("/demo-pay", async (req, res) => {
 //
 // Portal page polls this after the user approves in Phantom.
 // On first confirmed hit: opens the firewall, registers the proxy session.
+//
+// Rate-limited to 1 request per IP per 2s so a misbehaving (or hostile) client
+// can't hammer the Solana RPC through us. The bucket map is bounded by the
+// periodic sweep above.
 
-app.get("/payment-status", async (req, res) => {
+const STATUS_RATE_LIMIT_MS = 2000;
+
+function rateLimitStatus(req, res, next) {
+  const ip = clientIP(req);
+  const now = Date.now();
+  const last = statusRateBuckets.get(ip) || 0;
+  if (now - last < STATUS_RATE_LIMIT_MS) {
+    res.set("Retry-After", "2");
+    return res.status(429).json({ error: "rate limited — try again in a moment" });
+  }
+  statusRateBuckets.set(ip, now);
+  next();
+}
+
+app.get("/payment-status", rateLimitStatus, async (req, res) => {
   const ref = req.query.reference;
   if (!ref) return res.status(400).json({ error: "reference required" });
 
