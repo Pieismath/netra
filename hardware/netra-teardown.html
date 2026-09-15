@@ -1,0 +1,1123 @@
+<!doctype html>
+<html lang="en">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="utf-8">
+<title>Netra Teardown</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=B612+Mono:wght@400&family=IBM+Plex+Sans:wght@400;500&family=Saira+Condensed:wght@600;700&display=swap">
+<style>
+  :root {
+    --ground-top: #EEF2F0;
+    --ground-bottom: #D6DEDA;
+    --surface: #FFFFFF;
+    --ink: #16201E;
+    --ink-2: #4B5955;
+    --ink-3: #6F7C78;
+    --hair: #C8D2CF;
+    --pill: #FFFFFFC4;
+    --shadow: 0 8px 28px rgba(22, 32, 30, 0.16);
+    --accent: #0A8475;
+    --cat-enclosure: #74817D;
+    --cat-radio: #B9682A;
+    --cat-compute: #466AA8;
+    --cat-interface: #93539F;
+    --font-display: "Saira Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+    --font-body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+    --font-mono: "B612 Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground-top: #18211F;
+      --ground-bottom: #0C1211;
+      --surface: #1A2321;
+      --ink: #E0E9E6;
+      --ink-2: #A9B7B3;
+      --ink-3: #7C8B87;
+      --hair: #2A3532;
+      --pill: #1A2321CC;
+      --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+      --accent: #41D0BB;
+      --cat-enclosure: #97A4A0;
+      --cat-radio: #DE8B45;
+      --cat-compute: #7D9BD5;
+      --cat-interface: #C385CE;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground-top: #18211F;
+    --ground-bottom: #0C1211;
+    --surface: #1A2321;
+    --ink: #E0E9E6;
+    --ink-2: #A9B7B3;
+    --ink-3: #7C8B87;
+    --hair: #2A3532;
+    --pill: #1A2321CC;
+    --shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+    --accent: #41D0BB;
+    --cat-enclosure: #97A4A0;
+    --cat-radio: #DE8B45;
+    --cat-compute: #7D9BD5;
+    --cat-interface: #C385CE;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: linear-gradient(180deg, var(--ground-top), var(--ground-bottom)) fixed;
+    color: var(--ink);
+    font: 400 14px/1.45 var(--font-body);
+    padding-inline: 16px;
+    padding-block: 16px;
+    -webkit-font-smoothing: antialiased;
+  }
+  p { margin: 0; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .stage { position: relative; height: calc(100vh - 32px); min-height: 420px; }
+  .stage canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+  .stage canvas.picking { cursor: pointer; }
+  .stage canvas:active { cursor: grabbing; }
+
+  .brand {
+    position: absolute; top: 2px; left: 2px;
+    font: 700 20px/1 var(--font-display); letter-spacing: 0.1em; text-transform: uppercase;
+    pointer-events: none;
+  }
+  .hint {
+    position: absolute; top: 4px; right: 2px;
+    font-size: 13px; color: var(--ink-3); white-space: nowrap; pointer-events: none;
+    transition: opacity 0.4s;
+  }
+  .hint.is-gone { opacity: 0; }
+  .controls {
+    position: absolute; left: 50%; bottom: 0; transform: translateX(-50%);
+    display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px 22px;
+    width: max-content; max-width: 100%;
+    background: var(--pill); border: 1px solid var(--hair); border-radius: 999px;
+    padding: 9px 18px;
+  }
+  .slider { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+  .slider input { width: 120px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+  .slider output { min-width: 2.8em; font: 400 11px/1 var(--font-mono); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+  .info {
+    position: absolute; width: max-content; max-width: min(260px, calc(100% - 16px));
+    background: var(--surface); border-radius: 8px; box-shadow: var(--shadow);
+    padding: 10px 12px 11px; display: grid; gap: 3px;
+  }
+  .info[hidden] { display: none; }
+  .info-name { display: flex; align-items: center; gap: 7px; font: 600 17px/1.15 var(--font-display); letter-spacing: 0.02em; }
+  .info-name i { width: 8px; height: 8px; border-radius: 50%; background: var(--dot, var(--accent)); flex: none; }
+  .info-role { font-size: 13px; color: var(--ink-2); }
+  .info-size { font: 400 11px/1.4 var(--font-mono); color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: pre-line; }
+
+  .loading {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    font: 400 12px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3);
+  }
+  .loading[hidden] { display: none; }
+
+  @media (max-width: 640px) {
+    .controls { left: 0; transform: none; width: 100%; flex-direction: column; align-items: stretch; border-radius: 14px; }
+    .slider { display: grid; grid-template-columns: 7.2em minmax(0, 1fr) 2.8em; gap: 10px; }
+    .slider input { width: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+
+<main class="stage" id="stage">
+  <canvas id="view" aria-label="3D model of the Netra hotspot. Drag to rotate, scroll to zoom, click a part for details."></canvas>
+  <div class="loading" id="loading">Loading model…</div>
+  <p class="brand">Netra</p>
+  <p class="hint" id="hint">Drag to rotate · click any part</p>
+  <div class="controls" role="group" aria-label="View controls">
+    <label class="slider" for="opacity">Shell opacity <input type="range" id="opacity" min="0" max="100" value="22"><output id="opacity-out" for="opacity">22%</output></label>
+    <label class="slider" for="explode">Explode <input type="range" id="explode" min="0" max="100" value="90"><output id="explode-out" for="explode">90%</output></label>
+    <label class="slider" for="cut">Cut away <input type="range" id="cut" min="0" max="100" value="0"><output id="cut-out" for="cut">Off</output></label>
+  </div>
+  <div class="info" id="info" aria-live="polite" hidden>
+    <p class="info-name"><i></i><span id="info-name"></span></p>
+    <p class="info-role" id="info-role"></p>
+    <p class="info-size" id="info-size"></p>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+"use strict";
+/* ============================================================
+   Netra teardown viewer
+   Device frame: millimeters, Z up, bottom of the device at z = 0,
+   long axis on X, the front edge faces -Y. The root group is turned
+   so +Z becomes three.js +Y.
+   ============================================================ */
+
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const FINISHES = {
+  graphite: { shell: "#2B2D32", button: "#3B3E45", led: "#3BE3CB" },
+  chalk:    { shell: "#E4E0D8", button: "#C8C3BA", led: "#34B8FF" },
+  ember:    { shell: "#B8441C", button: "#26272B", led: "#FFE7C4" },
+};
+
+const CATEGORIES = [
+  { key: "enclosure", label: "Enclosure", token: "--cat-enclosure" },
+  { key: "radio", label: "Radio", token: "--cat-radio" },
+  { key: "compute", label: "Compute & power", token: "--cat-compute" },
+  { key: "interface", label: "Controls & I/O", token: "--cat-interface" },
+];
+
+const cutPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 1e6);
+
+/* ---------------- planform + swept geometry ---------------- */
+
+/** Closed CCW outline with outward normals. r = W/2 gives a stadium, L = W = 2r a circle. */
+function outline(L, W, r, seg = 10) {
+  r = Math.max(Math.min(r, L / 2, W / 2), 0.01);
+  const cx = L / 2 - r, cy = W / 2 - r, pts = [];
+  [[cx, cy, 0], [-cx, cy, 90], [-cx, -cy, 180], [cx, -cy, 270]].forEach(([qx, qy, a0]) => {
+    for (let i = 0; i <= seg; i++) {
+      const a = (a0 + (90 * i) / seg) * Math.PI / 180;
+      const p = { x: qx + r * Math.cos(a), y: qy + r * Math.sin(a), nx: Math.cos(a), ny: Math.sin(a) };
+      const last = pts[pts.length - 1];
+      if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 1e-6) pts.push(p);
+    }
+  });
+  if (Math.hypot(pts[0].x - pts[pts.length - 1].x, pts[0].y - pts[pts.length - 1].y) < 1e-6) pts.pop();
+  return pts;
+}
+const insetPts = (pts, d) => pts.map((p) => ({ x: p.x - p.nx * d, y: p.y - p.ny * d, nx: p.nx, ny: p.ny }));
+const movePts = (pts, dx, dy) => pts.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy }));
+
+/** Sweep a profile ({d: inset, z, h: normal along outline normal, v: normal along Z}) around an outline. */
+function sweep(pts, profile, closed = true) {
+  const n = pts.length, m = profile.length;
+  const pos = new Float32Array(n * m * 3), nor = new Float32Array(n * m * 3);
+  profile.forEach((q, i) => {
+    const len = Math.hypot(q.h, q.v) || 1;
+    pts.forEach((p, j) => {
+      const k = (i * n + j) * 3;
+      pos[k] = p.x - p.nx * q.d; pos[k + 1] = p.y - p.ny * q.d; pos[k + 2] = q.z;
+      nor[k] = (p.nx * q.h) / len; nor[k + 1] = (p.ny * q.h) / len; nor[k + 2] = q.v / len;
+    });
+  });
+  const idx = [];
+  const spans = closed ? n : n - 1;
+  for (let i = 0; i < m - 1; i++) {
+    for (let j = 0; j < spans; j++) {
+      const a = i * n + j, b = i * n + ((j + 1) % n), c = (i + 1) * n + ((j + 1) % n), d = (i + 1) * n + j;
+      const ux = pos[b * 3] - pos[a * 3], uy = pos[b * 3 + 1] - pos[a * 3 + 1], uz = pos[b * 3 + 2] - pos[a * 3 + 2];
+      const vx = pos[d * 3] - pos[a * 3], vy = pos[d * 3 + 1] - pos[a * 3 + 1], vz = pos[d * 3 + 2] - pos[a * 3 + 2];
+      const fx = uy * vz - uz * vy, fy = uz * vx - ux * vz, fz = ux * vy - uy * vx;
+      const agrees = fx * nor[a * 3] + fy * nor[a * 3 + 1] + fz * nor[a * 3 + 2] >= 0;
+      if (agrees) idx.push(a, b, c, a, c, d); else idx.push(a, c, b, a, d, c);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setAttribute("normal", new THREE.BufferAttribute(nor, 3));
+  g.setIndex(idx);
+  return g;
+}
+
+/** Quarter-round profile points; sign = -1 points normals into a cavity. */
+function arc(dc, zc, r, a0, a1, steps, sign = 1) {
+  const out = [];
+  for (let i = 0; i <= steps; i++) {
+    const a = (a0 + ((a1 - a0) * i) / steps) * Math.PI / 180;
+    out.push({ d: dc - r * Math.cos(a), z: zc + r * Math.sin(a), h: sign * Math.cos(a), v: sign * Math.sin(a) });
+  }
+  return out;
+}
+
+/** Flat face from an outline, with holes, facing +Z (dir 1) or -Z (dir -1). */
+function capGeometry(pts, holes, z, dir) {
+  const shape = new THREE.Shape(pts.map((p) => new THREE.Vector2(p.x, p.y)));
+  holes.forEach((h) => shape.holes.push(new THREE.Path(h.map((p) => new THREE.Vector2(p.x, p.y)))));
+  const g = new THREE.ShapeGeometry(shape);
+  g.translate(0, 0, z);
+  if (dir < 0) {
+    const ix = g.index.array;
+    for (let i = 0; i < ix.length; i += 3) { const t = ix[i + 1]; ix[i + 1] = ix[i + 2]; ix[i + 2] = t; }
+    const nr = g.attributes.normal.array;
+    for (let i = 2; i < nr.length; i += 3) nr[i] = -1;
+  }
+  return g;
+}
+
+/**
+ * Hollow molded housing, open at z = 0 (the parting line), closed at z = H.
+ * R = outer edge fillet, c = parting-line round, wall = wall thickness.
+ */
+function housingGeometries(pts, H, R, c, wall, holes = []) {
+  const Rin = Math.max(R - wall, 0.4);
+  const outer = [...arc(c, c, c, -90, 0, 3), ...arc(R, H - R, R, 0, 90, 7)];
+  const inner = [{ d: wall, z: 0, h: -1, v: 0 }, ...arc(wall + Rin, H - wall - Rin, Rin, 0, 90, 5, -1)];
+  const rim = [{ d: c, z: 0, h: 0, v: -1 }, { d: wall, z: 0, h: 0, v: -1 }];
+  const geos = [sweep(pts, outer), sweep(pts, inner), sweep(pts, rim)];
+  geos.push(capGeometry(insetPts(pts, R), holes, H, 1));
+  geos.push(capGeometry(insetPts(pts, wall + Rin), holes, H - wall, -1));
+  holes.forEach((h) => geos.push(sweep(h, [{ d: 0, z: H - wall, h: -1, v: 0 }, { d: 0, z: H, h: -1, v: 0 }])));
+  return geos;
+}
+
+/** Rounded box from z = 0 to z = H with softened edges. */
+function roundedBox(L, W, H, r = 0.8, bevel = 0.25, seg = 6) {
+  bevel = Math.max(0, Math.min(bevel, H / 2 - 0.02, r - 0.02));
+  const shape = new THREE.Shape(outline(L, W, r, seg).map((p) => new THREE.Vector2(p.x, p.y)));
+  const g = new THREE.ExtrudeGeometry(shape, {
+    depth: Math.max(H - 2 * bevel, 0.02), bevelEnabled: bevel > 0, bevelThickness: bevel,
+    bevelSize: bevel, bevelOffset: -bevel, bevelSegments: 2, curveSegments: seg,
+  });
+  g.translate(0, 0, bevel);
+  return g;
+}
+
+/** Cylinder standing on z = 0, axis +Z. */
+function cylinderZ(r, h, seg = 28, rTop = r) {
+  const g = new THREE.CylinderGeometry(rTop, r, h, seg);
+  g.rotateX(Math.PI / 2);
+  g.translate(0, 0, h / 2);
+  return g;
+}
+
+function canvasTexture(w, h, draw) {
+  const cv = document.createElement("canvas");
+  cv.width = w; cv.height = h;
+  draw(cv.getContext("2d"), w, h);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.encoding = THREE.sRGBEncoding;
+  tex.anisotropy = 8;
+  return tex;
+}
+
+/** Map a canvas texture onto the XY caps of an extrusion L x W centered at the origin. */
+function fitTexture(tex, L, W) {
+  tex.repeat.set(1 / L, 1 / W);
+  tex.offset.set(0.5, 0.5);
+  return tex;
+}
+
+/* ---------------- materials ---------------- */
+
+const shellMaterials = [];
+const buttonMaterials = [];
+const ledMaterials = [];
+
+function material(kind, extra = {}) {
+  const base = { clippingPlanes: [cutPlane], clipShadows: true };
+  let m;
+  switch (kind) {
+    case "shell":
+      m = new THREE.MeshPhysicalMaterial({ ...base, color: 0x2b2d32, roughness: 0.62, sheen: 0.35,
+        sheenRoughness: 0.7, sheenColor: new THREE.Color(0x8d9794), side: THREE.DoubleSide });
+      shellMaterials.push(m);
+      break;
+    case "button":
+      m = new THREE.MeshPhysicalMaterial({ ...base, color: 0x3b3e45, roughness: 0.3, clearcoat: 0.7, clearcoatRoughness: 0.1 });
+      buttonMaterials.push(m);
+      break;
+    case "led":
+      m = new THREE.MeshStandardMaterial({ ...base, color: 0xffffff, emissive: 0x3be3cb, emissiveIntensity: 2.4 });
+      ledMaterials.push(m);
+      break;
+    case "lightguide":
+      m = new THREE.MeshPhysicalMaterial({ ...base, color: 0xf2fffc, roughness: 0.35, transmission: 0.6,
+        thickness: 1.5, emissive: 0x3be3cb, emissiveIntensity: 0.8 });
+      ledMaterials.push(m);
+      break;
+    case "mask": m = new THREE.MeshStandardMaterial({ ...base, color: 0xffffff, roughness: 0.48 }); break;
+    case "fr4": m = new THREE.MeshStandardMaterial({ ...base, color: 0xbfae7c, roughness: 0.75 }); break;
+    case "can": m = new THREE.MeshStandardMaterial({ ...base, color: 0xc9cdd1, metalness: 0.9, roughness: 0.34 }); break;
+    case "chip": m = new THREE.MeshStandardMaterial({ ...base, color: 0x17191c, roughness: 0.42 }); break;
+    case "gold": m = new THREE.MeshStandardMaterial({ ...base, color: 0xd6ad48, metalness: 1, roughness: 0.3 }); break;
+    case "steel": m = new THREE.MeshStandardMaterial({ ...base, color: 0xbcc1c6, metalness: 1, roughness: 0.3 }); break;
+    case "pouch": m = new THREE.MeshStandardMaterial({ ...base, color: 0xffffff, metalness: 0.45, roughness: 0.4 }); break;
+    case "pouchEdge": m = new THREE.MeshStandardMaterial({ ...base, color: 0xb5bcc3, metalness: 0.55, roughness: 0.38 }); break;
+    case "flex": m = new THREE.MeshStandardMaterial({ ...base, color: 0xffffff, metalness: 0.3, roughness: 0.42, side: THREE.DoubleSide }); break;
+    case "coax": m = new THREE.MeshStandardMaterial({ ...base, color: 0x2a2c2e, roughness: 0.55 }); break;
+    case "pad": m = new THREE.MeshStandardMaterial({ ...base, color: 0x6c7476, roughness: 0.95 }); break;
+    case "passive": m = new THREE.MeshStandardMaterial({ ...base, color: 0x8f8266, roughness: 0.5 }); break;
+    case "screen": m = new THREE.MeshPhysicalMaterial({ ...base, color: 0x040506, roughness: 0.08, clearcoat: 1,
+      emissive: 0xffffff, emissiveIntensity: 1.15 }); break;
+    default: m = new THREE.MeshStandardMaterial({ ...base, color: 0x888888, roughness: 0.5 });
+  }
+  Object.assign(m, extra);
+  return m;
+}
+
+/* ---------------- part registry ---------------- */
+
+let device = null;          // THREE.Group in device frame for the current design
+let parts = [];
+const shellDecals = [];     // dark port openings that fade with the shell
+
+function mulberry32(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function part(spec) {
+  const group = new THREE.Group();
+  device.add(group);
+  const p = { mass: 0, at: [0, 0, 0], explode: [0, 0, 0], ...spec, group, meshes: [] };
+  p.base = new THREE.Vector3(...p.at);
+  p.explodeVec = new THREE.Vector3(...p.explode);
+  group.position.copy(p.base);
+  parts.push(p);
+  return p;
+}
+
+function put(p, geo, mat, x = 0, y = 0, z = 0) {
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(x, y, z);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.userData.part = p;
+  p.group.add(mesh);
+  p.meshes.push(mesh);
+  return mesh;
+}
+
+function sweepUV(pts, profile, closed = true) {
+  const g = sweep(pts, profile, closed);
+  const n = pts.length, m = profile.length, uv = new Float32Array(n * m * 2);
+  for (let i = 0; i < m; i++) {
+    for (let j = 0; j < n; j++) {
+      const k = (i * n + j) * 2;
+      uv[k] = j / Math.max(n - 1, 1);
+      uv[k + 1] = i / Math.max(m - 1, 1);
+    }
+  }
+  g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+  return g;
+}
+
+/** Contiguous run of outline points that satisfy pick(), handling wrap-around. */
+function wallRun(pts, pick) {
+  const n = pts.length;
+  let start = pts.findIndex((p, i) => pick(p) && !pick(pts[(i - 1 + n) % n]));
+  if (start < 0) start = 0;
+  const run = [];
+  for (let k = 0; k < n; k++) {
+    const p = pts[(start + k) % n];
+    if (!pick(p)) break;
+    run.push(p);
+  }
+  return run;
+}
+
+function mirrorZ(g) {
+  g.scale(1, 1, -1);
+  const ix = g.index.array;
+  for (let i = 0; i < ix.length; i += 3) { const t = ix[i + 1]; ix[i + 1] = ix[i + 2]; ix[i + 2] = t; }
+  return g;
+}
+
+/* ---------------- enclosure ---------------- */
+
+/** Top housing (opens down at zMate) or bottom housing (mirrored, opens up at zMate). */
+function housing(spec, pts, H, R, wall, zMate, holes = [], bottom = false) {
+  const p = part({ cat: "enclosure", ...spec, at: [0, 0, zMate] });
+  p.shellMat = material("shell");
+  housingGeometries(pts, H, R, 0.45, wall, holes).forEach((g) => put(p, bottom ? mirrorZ(g) : g, p.shellMat));
+  return p;
+}
+
+function portDecal(p, facing, x, y, z, w, h) {
+  const [lx, ly] = facing === "-x" ? [h, w] : [w, h];
+  const m = material("chip", { color: new THREE.Color(0x0a0b0c), roughness: 0.7, side: THREE.DoubleSide });
+  shellDecals.push(m);
+  const mesh = put(p, capGeometry(outline(lx, ly, Math.min(lx, ly) / 2, 8), [], 0, 1), m, x, y, z - p.base.z);
+  mesh.rotation.set(facing === "-y" ? Math.PI / 2 : 0, facing === "-x" ? -Math.PI / 2 : 0, 0);
+  mesh.castShadow = false;
+}
+
+function bosses(p, spots, zFloor, zTop) {
+  spots.forEach(([x, y]) => put(p, cylinderZ(2.1, zTop - zFloor, 20), p.shellMat, x, y, zFloor - p.base.z));
+}
+
+/* ---------------- board + silicon ---------------- */
+
+function boardTexture(L, W, labels, seed) {
+  return fitTexture(canvasTexture(1024, Math.max(64, Math.round((1024 * W) / L)), (ctx, w, h) => {
+    const rnd = mulberry32(seed);
+    const X = (x) => ((x + L / 2) / L) * w, Y = (y) => ((W / 2 - y) / W) * h;
+    ctx.fillStyle = "#1f5a3d";
+    ctx.fillRect(0, 0, w, h);
+    ctx.lineCap = "round";
+    for (let i = 0; i < 110; i++) {
+      let x = rnd() * w, y = rnd() * h;
+      ctx.strokeStyle = `rgba(118, 186, 128, ${0.18 + rnd() * 0.22})`;
+      ctx.lineWidth = 1.5 + rnd() * 2;
+      ctx.beginPath(); ctx.moveTo(x, y);
+      for (let k = 0; k < 4; k++) { if (rnd() < 0.5) x += (rnd() - 0.5) * w * 0.3; else y += (rnd() - 0.5) * h * 0.3; ctx.lineTo(x, y); }
+      ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(214, 178, 88, 0.9)";
+    for (let i = 0; i < 180; i++) { ctx.beginPath(); ctx.arc(rnd() * w, rnd() * h, 2.2, 0, Math.PI * 2); ctx.fill(); }
+    ctx.fillStyle = "rgba(238, 242, 236, 0.92)";
+    ctx.font = `${Math.round((2.1 / L) * w)}px "B612 Mono", monospace`;
+    labels.forEach(([t, x, y]) => ctx.fillText(t, X(x), Y(y)));
+  }), L, W);
+}
+
+function board(spec, L, W, r, z, labels, seed) {
+  const p = part({ cat: "compute", ...spec });
+  put(p, roundedBox(L, W, 1.0, r, 0), [material("mask", { map: boardTexture(L, W, labels, seed) }), material("fr4")], 0, 0, z);
+  return p;
+}
+
+function stampTexture(L, W, lines) {
+  return fitTexture(canvasTexture(512, Math.max(64, Math.round((512 * W) / L)), (ctx, w, h) => {
+    ctx.fillStyle = "#c7cbcf"; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "rgba(60, 64, 68, 0.75)";
+    ctx.textAlign = "center";
+    lines.forEach((t, i) => {
+      ctx.font = `${i === 0 ? 700 : 400} ${Math.round(h * (i === 0 ? 0.16 : 0.1))}px "B612 Mono", monospace`;
+      ctx.fillText(t, w / 2, h * (0.42 + i * 0.17));
+    });
+    ctx.beginPath(); ctx.arc(w * 0.1, h * 0.14, h * 0.04, 0, Math.PI * 2); ctx.fill();
+  }), L, W);
+}
+
+/** Shielded module: stamped can on the board face at z (top side) or hanging below it (under = true). */
+function shieldedModule(spec, L, W, H, x, y, z, lines, under = false) {
+  const p = part(spec);
+  const mesh = put(p, roundedBox(L, W, H, 0.8, 0.2), [material("can", { map: stampTexture(L, W, lines), color: new THREE.Color(0xffffff) }), material("can")], x, y, under ? z - H : z);
+  if (under) mesh.rotation.x = Math.PI, mesh.position.z = z;
+  return p;
+}
+
+function chip(spec, L, W, H, x, y, z) {
+  const p = part(spec);
+  put(p, roundedBox(L, W, H, 0.3, 0.06, 3), material("chip"), x, y, z);
+  return p;
+}
+
+function passives(spec, z, regions, count, seed) {
+  const p = part({ cat: "compute", ...spec });
+  const rnd = mulberry32(seed);
+  const geo = new THREE.BoxGeometry(1.0, 0.5, 0.45);
+  geo.translate(0, 0, 0.225);
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1), zAxis = new THREE.Vector3(0, 0, 1);
+  [["passive", count], ["chip", Math.round(count * 0.4)]].forEach(([kind, total]) => {
+    const inst = new THREE.InstancedMesh(geo, material(kind), total);
+    for (let i = 0; i < total; i++) {
+      const [x0, y0, x1, y1] = regions[i % regions.length];
+      q.setFromAxisAngle(zAxis, rnd() < 0.5 ? 0 : Math.PI / 2);
+      inst.setMatrixAt(i, m4.compose(new THREE.Vector3(x0 + rnd() * (x1 - x0), y0 + rnd() * (y1 - y0), z), q, one));
+    }
+    inst.castShadow = true;
+    inst.userData.part = p;
+    p.group.add(inst);
+    p.meshes.push(inst);
+  });
+  return p;
+}
+
+/* ---------------- power ---------------- */
+
+function batteryTexture(L, W, mah, wh) {
+  return fitTexture(canvasTexture(1024, Math.round((1024 * W) / L), (ctx, w, h) => {
+    ctx.fillStyle = "#c3c9ce"; ctx.fillRect(0, 0, w, h);
+    const m = h * 0.1;
+    ctx.fillStyle = "#1e3a5c"; ctx.fillRect(m, m, w - 2 * m, h - 2 * m);
+    ctx.fillStyle = "#e9eef3"; ctx.textAlign = "left";
+    ctx.font = `700 ${Math.round(h * 0.13)}px "B612 Mono", monospace`;
+    ctx.fillText("Li-ion polymer", m * 2, m + h * 0.2);
+    ctx.font = `400 ${Math.round(h * 0.09)}px "B612 Mono", monospace`;
+    ctx.fillText(`3.85 V   ${mah} mAh   ${wh} Wh`, m * 2, m + h * 0.36);
+    ctx.fillStyle = "rgba(233, 238, 243, 0.55)";
+    ctx.font = `400 ${Math.round(h * 0.06)}px "B612 Mono", monospace`;
+    ctx.fillText("Do not puncture, crush or heat above 60 °C", m * 2, h - m * 1.6);
+  }), L, W);
+}
+
+function battery(spec, L, W, H, x, y, z, mah, wh) {
+  const p = part({ cat: "compute", ...spec });
+  put(p, roundedBox(L, W, H, 2.2, Math.min(0.9, H / 3), 6), [material("pouch", { map: batteryTexture(L, W, mah, wh) }), material("pouchEdge")], x, y, z);
+  put(p, roundedBox(4, W * 0.5, 1.1, 0.3, 0.1), material("fr4", { color: new THREE.Color(0x1f5a3d) }), x + L / 2 + 2.2, y, z + H * 0.35);
+  [-1, 1].forEach((s) => put(p, new THREE.BoxGeometry(3.2, 3, 0.15), material("steel"), x + L / 2 + 0.6, y + s * W * 0.14, z + H * 0.5));
+  return p;
+}
+
+/* ---------------- radio ---------------- */
+
+function flexTexture() {
+  return canvasTexture(512, 96, (ctx, w, h) => {
+    ctx.fillStyle = "#b8752a"; ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = "#e6b25d"; ctx.lineWidth = 7; ctx.lineJoin = "round";
+    ctx.beginPath(); ctx.moveTo(10, h * 0.5);
+    for (let x = 10, up = true; x < w - 10; x += 22, up = !up) { ctx.lineTo(x, up ? h * 0.25 : h * 0.75); ctx.lineTo(x + 22, up ? h * 0.25 : h * 0.75); }
+    ctx.stroke();
+  });
+}
+
+/** Flex antenna glued to the inside of a wall, following the outline run. */
+function flexAntenna(spec, run, d, z0, z1) {
+  const p = part({ cat: "radio", ...spec });
+  put(p, sweepUV(run, [{ d, z: z0, h: -1, v: 0 }, { d, z: z1, h: -1, v: 0 }], false), material("flex", { map: flexTexture() }));
+  return p;
+}
+
+function coax(p, points, r = 0.55) {
+  const curve = new THREE.CatmullRomCurve3(points.map(([x, y, z]) => new THREE.Vector3(x, y, z)));
+  put(p, new THREE.TubeGeometry(curve, 64, r, 8, false), material("coax"));
+  [points[0], points[points.length - 1]].forEach(([x, y, z]) => put(p, cylinderZ(1.0, 1.0, 16), material("gold"), x, y, z - 0.5));
+}
+
+/* ---------------- controls + I/O ---------------- */
+
+/** USB-C receptacle whose opening faces -X or -Y at (x, y, z). */
+function usbC(spec, facing, x, y, z) {
+  const p = part({ cat: "interface", ...spec });
+  const flipXY = facing === "-x";
+  const dims = (a, b) => (flipXY ? [b, a] : [a, b]);
+  const shape = new THREE.Shape(outline(...dims(8.94, 3.26), 1.63, 10).map((v) => new THREE.Vector2(v.x, v.y)));
+  shape.holes.push(new THREE.Path(outline(...dims(8.34, 2.66), 1.33, 10).map((v) => new THREE.Vector2(v.x, v.y))));
+  const holder = new THREE.Group();
+  holder.position.set(x, y, z);
+  holder.rotation.set(flipXY ? 0 : -Math.PI / 2, flipXY ? Math.PI / 2 : 0, 0);
+  p.group.add(holder);
+  const add = (geo, mat, tz) => { const m = new THREE.Mesh(geo, mat); m.position.z = tz; m.castShadow = true; m.userData.part = p; holder.add(m); p.meshes.push(m); };
+  add(new THREE.ExtrudeGeometry(shape, { depth: 7.35, bevelEnabled: false, curveSegments: 10 }), material("steel"), 0);
+  add(new THREE.BoxGeometry(...dims(6.6, 0.7), 5.4), material("chip"), 4.2);
+  add(new THREE.BoxGeometry(...dims(8.3, 2.6), 0.6), material("chip"), 7.0);
+  return p;
+}
+
+function tactSwitch(spec, x, y, z) {
+  const p = part({ cat: "interface", ...spec });
+  put(p, roundedBox(6, 6, 2.1, 0.5, 0.12), material("steel"), x, y, z);
+  put(p, cylinderZ(1.75, 1.4, 20), material("chip"), x, y, z + 2.1);
+  return p;
+}
+
+function leds(spec, spots, z) {
+  const p = part({ cat: "interface", ...spec });
+  spots.forEach(([x, y, lit = true]) => put(p, roundedBox(1.6, 0.8, 0.55, 0.2, 0.05, 3), lit ? material("led") : material("chip"), x, y, z));
+  return p;
+}
+
+function buttonCap(spec, L, W, r, h, x, y, z) {
+  const p = part({ cat: "interface", ...spec });
+  put(p, roundedBox(L, W, h, r, Math.min(0.6, h / 3), 16), material("button"), x, y, z);
+  return p;
+}
+
+function screenTexture(L, W) {
+  return fitTexture(canvasTexture(1024, Math.round((1024 * W) / L), (ctx, w, h) => {
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, w, h);
+    const u = h / 20;
+    ctx.fillStyle = "#e6fbf6";
+    for (let i = 0; i < 4; i++) ctx.fillRect(u * 2 + i * u * 1.25, u * 4.6 - (1 + i * 0.55) * u, u * 0.8, (1 + i * 0.55) * u);
+    ctx.font = `700 ${Math.round(u * 1.7)}px "B612 Mono", monospace`;
+    ctx.textAlign = "right"; ctx.fillText("LTE", w - u * 2, u * 4.4);
+    ctx.textAlign = "center";
+    ctx.font = `700 ${Math.round(u * 4)}px "IBM Plex Sans", sans-serif`;
+    ctx.fillText("3 guests", w / 2, h * 0.58);
+    ctx.fillStyle = "#3be3cb"; ctx.fillRect(w * 0.22, h * 0.7, w * 0.34, u * 0.5);
+    ctx.fillStyle = "rgba(230, 251, 246, 0.25)"; ctx.fillRect(w * 0.56, h * 0.7, w * 0.22, u * 0.5);
+    ctx.fillStyle = "#e6fbf6";
+    ctx.font = `400 ${Math.round(u * 1.5)}px "B612 Mono", monospace`;
+    ctx.fillText("1.2 GB shared · $0.84 earned", w / 2, h * 0.86);
+  }), L, W);
+}
+
+/* ---------------- shared small builders ---------------- */
+
+const info = (des, name, cat, role, size, spec, mass, explode) => ({ id: des, des, name, cat, role, size, spec, mass, explode });
+
+function flexPanel(spec, len, h, x, y, z, alongX = true) {
+  const p = part({ cat: "radio", ...spec });
+  const geo = alongX ? new THREE.BoxGeometry(len, 0.12, h) : new THREE.BoxGeometry(0.12, len, h);
+  put(p, geo, material("flex", { map: flexTexture() }), x, y, z);
+  return p;
+}
+
+function ringGeo(rOut, rIn, h) {
+  const s = new THREE.Shape(outline(2 * rOut, 2 * rOut, rOut, 24).map((v) => new THREE.Vector2(v.x, v.y)));
+  s.holes.push(new THREE.Path(outline(2 * rIn, 2 * rIn, rIn, 24).map((v) => new THREE.Vector2(v.x, v.y))));
+  return new THREE.ExtrudeGeometry(s, { depth: h, bevelEnabled: false, curveSegments: 24 });
+}
+
+const ROLE = {
+  ENC1: "Molded PC/ABS lid with a soft-touch finish. Holds the button and light windows.",
+  ENC2: "Base shell with the screw bosses and port openings.",
+  PCB1: "Six-layer board that connects the modem, Wi-Fi chip, memory and power.",
+  U1: "Connects to the cellular network. This is the uplink the host shares with guests.",
+  U2: "Runs the hotspot: broadcasts the guest network, serves the captive portal and times each paid session.",
+  TP1: "Pulls heat from the Wi-Fi chip into the top housing.",
+  U3: "RAM and flash for the router firmware and the on-device session ledger.",
+  U4: "Charges the cell over USB-C and feeds every voltage rail.",
+  BT1: "Li-ion polymer pouch cell, the heaviest part in the device.",
+  J1: "Charges the battery and handles first-time setup.",
+  ANT1: "Primary cellular antenna, kept as far from the battery and board as the shell allows.",
+  ANT2: "Second cellular antenna. Helps hold the uplink where signal is weak.",
+  ANT3: "Dual-band antenna that guests' phones connect to.",
+  W1: "Micro-coax runs from the radios to each antenna.",
+  SW1: "Tactile switch under the button: press to start sharing, hold to pair a phone.",
+  BTN1: "Glossy cap over the share switch.",
+  LG1: "Carries LED light up to the status windows.",
+  D1: "Show sharing state and how many guests are connected.",
+  H1: "Clamp the board between both housings.",
+  PAS: "Decoupling capacitors and resistors around each chip.",
+};
+
+/* ---------------- Card: phone-like slab with a status display ---------------- */
+
+function buildCard() {
+  const L = 98, W = 62, T = 13.5, wall = 1.6, zMate = 7.2;
+  const pts = outline(L, W, 11, 10);
+  const holes = [
+    movePts(outline(38, 21, 2.2, 6), -14, 5),
+    movePts(outline(11.6, 11.6, 5.8, 12), 28, 1),
+    ...[-4.2, 0, 4.2].map((dx) => movePts(outline(1.8, 1.8, 0.9, 6), 28 + dx, 15)),
+  ];
+  housing(info("ENC1", "Top housing", "enclosure", ROLE.ENC1, "98 × 62 × 6.3", "PC/ABS · soft-touch · 1.6 mm wall", 11.8, [0, 0, 34]),
+    pts, T - zMate - 0.05, 3.2, wall, zMate + 0.05, holes);
+  const bottom = housing(info("ENC2", "Bottom housing", "enclosure", ROLE.ENC2, "98 × 62 × 7.2", "PC/ABS · soft-touch · 1.6 mm wall", 13.5, [0, 0, -22]),
+    pts, zMate - 0.05, 2.4, wall, zMate - 0.05, [], true);
+  bosses(bottom, [[40, 22], [-40, 22], [40, -22], [-40, -22]], 1.6, 6.8);
+  portDecal(bottom, "-x", -L / 2 - 0.03, 0, 4.9, 9.6, 3.9);
+  portDecal(bottom, "-y", 18, -W / 2 - 0.03, 4.6, 12.6, 4.0);
+
+  board(info("PCB1", "Main board", "compute", ROLE.PCB1, "88 × 54 × 1.0", "FR-4 · 6 layers · 1.0 mm", 7.2, [0, 0, 10]),
+    88, 54, 8, 6.8, [["U1", -31, 3], ["U2", 5, -24], ["U3", 8, 12], ["J2", -30, 25], ["SW1", 23, -4], ["NETRA MB-C  REV B", 12, 24]], 7);
+  shieldedModule(info("U1", "LTE modem", "radio", ROLE.U1, "29 × 26 × 2.3", "LTE Cat 4 · 150 / 50 Mbps", 4.6, [0, 0, 15]),
+    29, 26, 2.3, -18, -12, 7.8, ["LTE CAT 4", "NT-M4 GLOBAL"]);
+  shieldedModule(info("U2", "Wi-Fi 6 chip", "compute", ROLE.U2, "15 × 15 × 1.8", "Wi-Fi 6 · 2×2 MIMO · 1.5 W", 1.9, [0, 0, 15]),
+    15, 15, 1.8, 12, -14, 7.8, ["WI-FI 6", "2×2"]);
+  const pad = part(info("TP1", "Thermal pad", "compute", ROLE.TP1, "13 × 13 × 2.3", "Gap pad · 3 W/m·K", 0.4, [0, 0, 24]));
+  put(pad, roundedBox(13, 13, 2.3, 1, 0.3), material("pad"), 12, -14, 9.6);
+  chip(info("U3", "Memory", "compute", ROLE.U3, "8 × 8 × 1.0", "512 MB LPDDR4 · 4 GB eMMC", 0.5, [0, 0, 15]), 8, 8, 1.0, 12, 6, 7.8);
+  chip(info("U4", "Power management", "compute", ROLE.U4, "5 × 5 × 0.9", "PMIC · 3 A charger", 0.2, [0, 0, 15]), 5, 5, 0.9, 36, -18, 7.8);
+  const sim = part(info("J2", "SIM holder", "interface", "Takes a nano-SIM from the host's carrier.", "14.5 × 12.3 × 1.4", "Nano-SIM · push-push", 1.1, [0, 0, 15]));
+  put(sim, roundedBox(14.5, 12.3, 1.4, 0.5, 0.1), material("steel"), -22, 18, 7.8);
+  put(sim, roundedBox(12.3, 8.8, 0.3, 1.2, 0.05), material("gold"), -23, 18, 9.25);
+  passives(info("PAS", "Passives", "compute", ROLE.PAS, "~98 parts", "0402 / 0201", 0.3, [0, 0, 15]),
+    7.8, [[-44, -26, -35, 26], [21, -26, 43, -9], [-2, -26, 4, -4], [18, 8, 42, 24]], 70, 3);
+  usbC(info("J1", "USB-C port", "interface", ROLE.J1, "8.9 × 3.3 × 7.4", "USB 2.0 · 5 V / 3 A in", 1.1, [0, 0, 10]), "-x", -47.4, 0, 4.9);
+  tactSwitch(info("SW1", "Share switch", "interface", ROLE.SW1, "6 × 6 × 3.5", "Tactile · 160 gf", 0.4, [0, 0, 15]), 28, 1, 7.8);
+  buttonCap(info("BTN1", "Share button", "interface", ROLE.BTN1, "Ø11 × 1.8", "PC · gloss", 0.5, [0, 0, 48]), 11, 11, 5.5, 1.8, 28, 1, 11.5);
+  leds(info("D1", "Status LEDs", "interface", ROLE.D1, "3 × 1.6 × 0.8", "RGB LED · 1608", 0.1, [0, 0, 15]),
+    [[23.8, 15], [28, 15], [32.2, 15, false]], 7.8);
+  const pipes = part(info("LG1", "Light pipes", "interface", ROLE.LG1, "3 × Ø1.5 × 4.9", "Clear polycarbonate", 0.1, [0, 0, 40]));
+  [23.8, 28, 32.2].forEach((x) => put(pipes, cylinderZ(0.75, 4.9, 12), material("lightguide"), x, 15, 8.4));
+
+  const power = part(info("SW2", "Power button", "interface", "Side button that turns the hotspot on and off.", "12 × 3.4 × 1.2", "Right-angle tactile switch", 0.4, [0, -10, 6]));
+  put(power, roundedBox(6, 3.5, 3.4, 0.4, 0.1), material("steel"), 18, -26.5, 3.3);
+  const cap = put(power, roundedBox(12, 3.4, 1.2, 1.7, 0.4, 10), material("button"), 18, -W / 2 + 0.9, 4.6);
+  cap.rotation.x = Math.PI / 2;
+
+  const display = part(info("DS1", "Display", "interface", "Shows signal, connected guests, data shared and earnings.", "38 × 24 × 2.3", "1.3 in OLED · 128 × 64", 3.4, [0, 0, 27]));
+  put(display, roundedBox(38, 24, 1.2, 1.5, 0.15), material("chip"), -14, 5, 10.6);
+  put(display, roundedBox(36.6, 19.6, 0.9, 1.6, 0.2), material("screen", { emissiveMap: screenTexture(36.6, 19.6) }), -14, 5, 11.95);
+  put(display, new THREE.BoxGeometry(12, 0.2, 3.0), material("flex", { map: flexTexture() }), -14, -7.1, 9.3);
+
+  battery(info("BT1", "Battery", "compute", ROLE.BT1, "74 × 44 × 5.0", "3.85 V · 3,200 mAh · 12.3 Wh", 58, [0, 0, -10]),
+    74, 44, 5.0, -1, 0, 1.7, "3,200", "12.3");
+
+  flexAntenna(info("ANT1", "LTE main antenna", "radio", ROLE.ANT1, "44 × 4.4 (flex)", "Flex PCB · 700–2700 MHz", 0.5, [8, 0, 34]),
+    wallRun(pts, (p) => p.x > 40), wall + 0.25, 8.0, 12.4);
+  flexPanel(info("ANT2", "LTE diversity antenna", "radio", ROLE.ANT2, "24 × 4.4 (flex)", "Flex PCB · 700–2700 MHz", 0.4, [0, -8, 34]), 24, 4.4, 26, -29.1, 10.2);
+  flexPanel(info("ANT3", "Wi-Fi antenna", "radio", ROLE.ANT3, "22 × 4.4 (flex)", "Flex PCB · 2.4 / 5 GHz", 0.4, [0, 8, 34]), 22, 4.4, -30, 29.1, 10.2);
+  const rf = part(info("W1", "RF cables", "radio", ROLE.W1, "3 runs", "Ø1.13 mm coax · U.FL", 0.7, [0, 0, 15]));
+  coax(rf, [[-6, -2, 10.3], [10, 3, 10.6], [30, -6, 10.8], [44.5, -14, 10]]);
+  coax(rf, [[-12, -24, 10.3], [4, -27.5, 10.5], [20, -28.2, 10.1], [26, -28.6, 9.6]]);
+  coax(rf, [[12, -6.2, 9.9], [10, 12, 10.4], [6, 22, 10.7], [-8, 26.5, 10.5], [-24, 28.4, 10.2]]);
+
+  const screws = part(info("H1", "Screws", "enclosure", ROLE.H1, "4 × M1.6 × 4", "Stainless · Torx T3", 0.5, [0, 0, 22]));
+  [[40, 22], [-40, 22], [40, -22], [-40, -22]].forEach(([x, y]) => put(screws, cylinderZ(1.55, 0.9, 16), material("steel"), x, y, 7.8));
+}
+
+/* ---------------- Puck: palm disc with a light ring ---------------- */
+
+function buildPuck() {
+  const D = 72, T = 17, wall = 1.6, zMate = 11.2;
+  const pts = outline(D, D, D / 2, 18);
+  const top = housing(info("ENC1", "Top housing", "enclosure", ROLE.ENC1, "Ø72 × 5.8", "PC/ABS · soft-touch · 1.6 mm wall", 9.6, [0, 0, 30]),
+    pts, T - zMate - 0.05, 5.0, wall, zMate + 0.05, [outline(23.4, 23.4, 11.7, 16)]);
+  put(top, ringGeo(10.3, 8.3, 1.5), top.shellMat, 0, 0, 15.45 - top.base.z);
+  const bottom = housing(info("ENC2", "Bottom housing", "enclosure", ROLE.ENC2, "Ø72 × 11.2", "PC/ABS · soft-touch · 1.6 mm wall", 15.2, [0, -0, -24]),
+    pts, zMate - 0.05, 3.0, wall, zMate - 0.05, [], true);
+  const bossSpots = [[0, 30], [-26, -15], [26, -15]];
+  bosses(bottom, bossSpots, 1.6, 10.4);
+  portDecal(bottom, "-y", 0, -D / 2 - 0.03, 6.4, 9.6, 3.9);
+  portDecal(bottom, "-y", 10, -34.62, 6.4, 1.0, 1.0);
+
+  board(info("PCB1", "Main board", "compute", ROLE.PCB1, "Ø62 × 1.0", "FR-4 · 6 layers · 1.0 mm", 5.6, [0, 0, 8]),
+    62, 62, 31, 10.4, [["U2", -26, 16], ["U3", 13, 15], ["SW1", -4, -5.5], ["NETRA MB-P  REV B", -14, -27]], 11);
+  shieldedModule(info("U1", "LTE modem", "radio", ROLE.U1, "29 × 26 × 2.3", "LTE Cat 4 · 150 / 50 Mbps", 4.6, [0, 0, 3]),
+    29, 26, 2.3, 0, -14, 10.4, ["LTE CAT 4", "NT-M4 GLOBAL"], true);
+  shieldedModule(info("U2", "Wi-Fi 6 chip", "compute", ROLE.U2, "14 × 14 × 1.8", "Wi-Fi 6 · 2×2 MIMO · 1.5 W", 1.8, [0, 0, 13]),
+    14, 14, 1.8, -19, 8, 11.4, ["WI-FI 6", "2×2"]);
+  const pad = part(info("TP1", "Thermal pad", "compute", ROLE.TP1, "12 × 12 × 2.2", "Gap pad · 3 W/m·K", 0.4, [0, 0, 22]));
+  put(pad, roundedBox(12, 12, 2.2, 1, 0.3), material("pad"), -19, 8, 13.2);
+  chip(info("U3", "Memory", "compute", ROLE.U3, "8 × 8 × 1.0", "512 MB LPDDR4 · 4 GB eMMC", 0.5, [0, 0, 13]), 8, 8, 1.0, 17, 9, 11.4);
+  chip(info("U4", "Power management", "compute", ROLE.U4, "5 × 5 × 0.9", "PMIC · 3 A charger", 0.2, [0, 0, 13]), 5, 5, 0.9, 8, -20, 11.4);
+  chip(info("U5", "eSIM", "interface", "Stores the carrier profile, so there is no SIM tray to lose.", "6 × 5 × 0.9", "eSIM · MFF2", 0.1, [0, 0, 13]), 6, 5, 0.9, -8, -20, 11.4);
+  passives(info("PAS", "Passives", "compute", ROLE.PAS, "~84 parts", "0402 / 0201", 0.3, [0, 0, 13]),
+    11.4, [[-27, -8, -12, -1], [12, -4, 27, 3], [-14, 17, 14, 26], [14, -25, 24, -12]], 60, 5);
+  usbC(info("J1", "USB-C port", "interface", ROLE.J1, "8.9 × 3.3 × 7.4", "USB 2.0 · 5 V / 3 A in", 1.1, [0, 0, 4]), "-y", 0, -34.4, 6.4);
+  tactSwitch(info("SW1", "Share switch", "interface", ROLE.SW1, "6 × 6 × 3.5", "Tactile · 160 gf", 0.4, [0, 0, 13]), 0, 0, 11.4);
+  leds(info("D1", "LED ring", "interface", ROLE.D1, "12 × 1.6 × 0.8", "RGB LED · 1608", 0.2, [0, 0, 13]),
+    Array.from({ length: 12 }, (_, i) => [10.85 * Math.cos((i * Math.PI) / 6), 10.85 * Math.sin((i * Math.PI) / 6)]), 11.4);
+  const guide = part(info("LG1", "Light ring", "interface", "Frosted ring that spreads the twelve LEDs into one even halo.", "Ø22.8 × 4.8", "Frosted polycarbonate", 0.6, [0, 0, 34]));
+  put(guide, ringGeo(11.4, 10.3, 4.8), material("lightguide"), 0, 0, 12.1);
+  buttonCap(info("BTN1", "Share button", "interface", ROLE.BTN1, "Ø16 × 1.8", "PC · gloss", 0.8, [0, 0, 42]), 16, 16, 8, 1.8, 0, 0, 15.0);
+
+  battery(info("BT1", "Battery", "compute", ROLE.BT1, "44 × 34 × 6.0", "3.85 V · 2,400 mAh · 9.2 Wh", 44, [0, 0, -10]),
+    44, 34, 6.0, 0, 7, 1.7, "2,400", "9.2");
+  const d = wall + 0.25;
+  flexAntenna(info("ANT1", "LTE main antenna", "radio", ROLE.ANT1, "arc 90° × 6.5 (flex)", "Flex PCB · 700–2700 MHz", 0.5, [0, 10, -24]),
+    wallRun(pts, (p) => p.y > 14 && p.x > -24), d, 3.0, 9.5);
+  flexAntenna(info("ANT2", "LTE diversity antenna", "radio", ROLE.ANT2, "arc 55° × 6.5 (flex)", "Flex PCB · 700–2700 MHz", 0.4, [-10, 0, -24]),
+    wallRun(pts, (p) => p.x < -22 && p.y < 10 && p.y > -24), d, 3.0, 9.5);
+  flexAntenna(info("ANT3", "Wi-Fi antenna", "radio", ROLE.ANT3, "arc 55° × 6.5 (flex)", "Flex PCB · 2.4 / 5 GHz", 0.4, [10, 0, -24]),
+    wallRun(pts, (p) => p.x > 22 && p.y < 8 && p.y > -26), d, 3.0, 9.5);
+  const rf = part(info("W1", "RF cables", "radio", ROLE.W1, "3 runs", "Ø1.13 mm coax · U.FL", 0.6, [0, 0, 5]));
+  coax(rf, [[-10, -3, 9.4], [-20, -4, 9.6], [-28, -6, 8.5], [-33.4, -6, 7]]);
+  coax(rf, [[10, -3, 9.4], [24, 4, 9.6], [24, 24, 9.2], [12, 32.6, 8]]);
+  coax(rf, [[-12, 8, 13.4], [0, 20, 13.8], [22, 18, 12.6], [30, 10, 11.8], [33.6, 2, 9]]);
+  const screws = part(info("H1", "Screws", "enclosure", ROLE.H1, "3 × M1.6 × 4", "Stainless · Torx T3", 0.4, [0, 0, 20]));
+  bossSpots.forEach(([x, y]) => put(screws, cylinderZ(1.55, 0.9, 16), material("steel"), x, y, 11.4));
+}
+
+/* ---------------- Stick: travel stick with a fold-out antenna ---------------- */
+
+const STICK_ANTENNA_OPEN_DEG = 34;
+
+function buildStick() {
+  const L = 118, W = 36, T = 19, wall = 1.6, zMate = 11.4;
+  const pts = outline(L, W, W / 2, 12);
+  const bay = movePts(outline(59, 16, 8, 8), 16, 0);
+  const holes = [bay, movePts(outline(14.4, 2.2, 1.1, 6), -43, 0), movePts(outline(9.6, 6.1, 2.4, 6), -26, 0)];
+  const top = housing(info("ENC1", "Top housing", "enclosure", ROLE.ENC1, "118 × 36 × 7.6", "PC/ABS · soft-touch · 1.6 mm wall", 16.5, [0, 0, 34]),
+    pts, T - zMate - 0.05, 5.5, wall, zMate + 0.05, holes);
+  housingGeometries(insetPts(bay, -0.8), 4.2, 1.0, 0.2, 0.8).forEach((g) => put(top, mirrorZ(g), top.shellMat, 0, 0, 17.4 - top.base.z));
+  const bottom = housing(info("ENC2", "Bottom housing", "enclosure", ROLE.ENC2, "118 × 36 × 11.4", "PC/ABS · soft-touch · 1.6 mm wall", 21.0, [0, 0, -22]),
+    pts, zMate - 0.05, 3.0, wall, zMate - 0.05, [], true);
+  const bossSpots = [[-45, 8], [-45, -8], [-17, 13.5], [-17, -13.5]];
+  bosses(bottom, bossSpots, 1.6, 10.4);
+  portDecal(bottom, "-x", -L / 2 - 0.03, 0, 6.2, 9.6, 3.9);
+
+  board(info("PCB1", "Main board", "compute", ROLE.PCB1, "104 × 30 × 1.0", "FR-4 · 6 layers · 1.0 mm", 8.4, [0, 0, 10]),
+    104, 30, 15, 10.4, [["U2", -44, 12], ["SW1", -30, -4.5], ["U5", -22, 12], ["NETRA MB-S  REV B", 6, -11]], 13);
+  shieldedModule(info("U1", "LTE modem", "radio", ROLE.U1, "29 × 22 × 2.3", "LTE Cat 4 · 150 / 50 Mbps", 4.2, [0, 0, 5]),
+    29, 22, 2.3, -28, 0, 10.4, ["LTE CAT 4", "NT-M4 GLOBAL"], true);
+  shieldedModule(info("U2", "Wi-Fi 6 chip", "compute", ROLE.U2, "13 × 13 × 1.6", "Wi-Fi 6 · 2×2 MIMO · 1.5 W", 1.7, [0, 0, 15]),
+    13, 13, 1.6, -36, 7.5, 11.4, ["WI-FI 6", "2×2"]);
+  const pad = part(info("TP1", "Thermal pad", "compute", ROLE.TP1, "11 × 11 × 4.4", "Gap pad · 3 W/m·K", 0.6, [0, 0, 26]));
+  put(pad, roundedBox(11, 11, 4.4, 1, 0.3), material("pad"), -36, 7.5, 13.0);
+  chip(info("U3", "Memory", "compute", ROLE.U3, "8 × 8 × 1.0", "512 MB LPDDR4 · 4 GB eMMC", 0.5, [0, 0, 15]), 8, 8, 1.0, -36, -8.5, 11.4);
+  chip(info("U4", "Power management", "compute", ROLE.U4, "5 × 5 × 0.9", "PMIC · 3 A charger", 0.2, [0, 0, 15]), 5, 5, 0.9, -18, -8, 11.4);
+  chip(info("U5", "eSIM", "interface", "Stores the carrier profile, so there is no SIM tray to lose.", "6 × 5 × 0.9", "eSIM · MFF2", 0.1, [0, 0, 15]), 6, 5, 0.9, -18, 8, 11.4);
+  passives(info("PAS", "Passives", "compute", ROLE.PAS, "~98 parts", "0402 / 0201", 0.3, [0, 0, 15]),
+    11.4, [[-50, -11, -45, 11], [-24, -13, -11, -3], [-12, 3, 10, 12], [20, -11, 46, 11]], 70, 9);
+  usbC(info("J1", "USB-C port", "interface", ROLE.J1, "8.9 × 3.3 × 7.4", "USB 2.0 · 5 V / 3 A in", 1.1, [0, 0, 5]), "-x", -57.4, 0, 6.2);
+  tactSwitch(info("SW1", "Share switch", "interface", ROLE.SW1, "6 × 6 × 3.5", "Tactile · 160 gf", 0.4, [0, 0, 15]), -26, 0, 11.4);
+  buttonCap(info("BTN1", "Share button", "interface", ROLE.BTN1, "9 × 5.5 × 3.8", "PC · gloss", 0.5, [0, 0, 46]), 9, 5.5, 2.2, 3.8, -26, 0, 15.0);
+  leds(info("D1", "Status LEDs", "interface", ROLE.D1, "6 × 1.6 × 0.8", "RGB LED · 1608", 0.1, [0, 0, 15]),
+    Array.from({ length: 6 }, (_, i) => [-49 + i * 2.4, 0]), 11.4);
+  const bar = part(info("LG1", "Light bar", "interface", "Frosted bar that turns six LEDs into one even status line.", "14 × 1.6 × 6.8", "Frosted polycarbonate", 0.2, [0, 0, 40]));
+  put(bar, roundedBox(14, 1.6, 6.8, 0.8, 0.2), material("lightguide"), -43, 0, 12.0);
+
+  battery(info("BT1", "Battery", "compute", ROLE.BT1, "63 × 26 × 7.5", "3.85 V · 3,600 mAh · 13.9 Wh", 64, [0, 0, -10]),
+    63, 26, 7.5, 18.5, 0, 1.7, "3,600", "13.9");
+
+  // fold-out paddle: part origin sits on the hinge axis so opening is a rotation about Y
+  const pivot = [37.5, 0, 16.0];
+  const paddle = part(info("ENC3", "Antenna paddle", "enclosure", "Fold-out housing that lifts the main antenna clear of your hand and the table.", "58 × 15 × 5.2", "PC/ABS · soft-touch", 3.1, [0, 0, 54]));
+  paddle.at = pivot;
+  paddle.base.set(...pivot);
+  paddle.group.position.copy(paddle.base);
+  paddle.group.rotation.y = (STICK_ANTENNA_OPEN_DEG * Math.PI) / 180;
+  put(paddle, roundedBox(58, 15, 5.2, 7.5, 1.6, 12), material("shell"), -21.5, 0, -2.6);
+  const mainAnt = part(info("ANT1", "LTE main antenna", "radio", ROLE.ANT1, "50 × 9 (flex)", "Flex PCB · 700–2700 MHz", 0.5, [0, 0, 6]));
+  paddle.group.add(mainAnt.group);
+  mainAnt.base.set(-21.5, 0, 0);
+  mainAnt.group.position.copy(mainAnt.base);
+  put(mainAnt, new THREE.BoxGeometry(50, 9, 0.12), material("flex", { map: flexTexture() }));
+  const hinge = part(info("HG1", "Hinge", "enclosure", "Friction hinge. The antenna cable runs through its core.", "Ø4.6 × 15.8", "Stainless pin · friction washer", 0.9, [0, 0, 44]));
+  hinge.base.set(...pivot);
+  hinge.group.position.copy(hinge.base);
+  const pin = put(hinge, cylinderZ(2.3, 15.8, 20), material("steel"), 0, -7.9, 0);
+  pin.rotation.x = -Math.PI / 2;
+
+  flexAntenna(info("ANT2", "LTE diversity antenna", "radio", ROLE.ANT2, "arc 120° × 6 (flex)", "Flex PCB · 700–2700 MHz", 0.4, [10, 0, -22]),
+    wallRun(pts, (p) => p.x > 46), wall + 0.25, 3.5, 9.5);
+  flexPanel(info("ANT3", "Wi-Fi antenna", "radio", ROLE.ANT3, "30 × 5 (flex)", "Flex PCB · 2.4 / 5 GHz", 0.4, [0, -10, -22]), 30, 5, 20, -16.1, 6.5);
+  const rf = part(info("W1", "RF cables", "radio", ROLE.W1, "3 runs", "Ø1.13 mm coax · U.FL", 0.8, [0, 0, 10]));
+  coax(rf, [[-20, 9, 9.6], [-10, 15.6, 10.2], [2, 15.6, 11.9], [20, 12, 12.8], [36, 4, 15.4]]);
+  coax(rf, [[-14, 9, 9.6], [-8, 15.3, 9.2], [30, 15.4, 9.0], [48, 13, 7.5], [55.5, 7, 6.5]]);
+  coax(rf, [[-30, 1.2, 13.2], [-22, -8, 12.2], [-12, -15.6, 10.9], [4, -15.7, 8.2], [12, -15.9, 7]]);
+  const screws = part(info("H1", "Screws", "enclosure", ROLE.H1, "4 × M1.6 × 4", "Stainless · Torx T3", 0.5, [0, 0, 22]));
+  bossSpots.forEach(([x, y]) => put(screws, cylinderZ(1.55, 0.9, 16), material("steel"), x, y, 11.4));
+}
+
+const DESIGNS = {
+  card:  { label: "Card",  envelope: "98 × 62 × 13.5", size: [98, 62, 13.5], build: buildCard },
+  puck:  { label: "Puck",  envelope: "Ø72 × 17", size: [72, 72, 17], build: buildPuck },
+  stick: { label: "Stick", envelope: "118 × 36 × 19", size: [118, 36, 30], build: buildStick },
+};
+
+/* ============================================================
+   Scene and interaction
+   ============================================================ */
+
+THREE.ColorManagement.legacyMode = false;
+
+const canvas = document.getElementById("view");
+const stageEl = document.getElementById("stage");
+const infoEl = document.getElementById("info");
+const hintEl = document.getElementById("hint");
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.localClippingEnabled = true;
+renderer.setClearColor(0x000000, 0);
+
+const scene = new THREE.Scene();
+scene.environment = (() => {
+  const env = new THREE.Scene();
+  const room = new THREE.Mesh(new THREE.BoxGeometry(60, 30, 60), new THREE.MeshBasicMaterial({ color: 0x5f6664, side: THREE.BackSide }));
+  room.position.y = 12;
+  env.add(room);
+  const panel = (w, h, x, y, z, k) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+    m.material.color.setScalar(k);
+    m.position.set(x, y, z);
+    m.lookAt(0, 0, 0);
+    env.add(m);
+  };
+  panel(18, 12, -14, 16, 12, 5);
+  panel(26, 3, 18, 10, -14, 3);
+  panel(40, 40, 0, 26.5, 0, 1.3);
+  return new THREE.PMREMGenerator(renderer).fromScene(env, 0.03).texture;
+})();
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa4a1, 0.3));
+const key = new THREE.DirectionalLight(0xffffff, 1.5);
+key.position.set(-90, 170, 120);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+Object.assign(key.shadow.camera, { left: -130, right: 130, top: 130, bottom: -130, near: 10, far: 600 });
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.35;
+scene.add(key);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(1200, 1200), new THREE.ShadowMaterial({ opacity: 0.16 }));
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const root = new THREE.Group();
+root.rotation.x = -Math.PI / 2;   // device +Z (up) -> world +Y
+scene.add(root);
+
+const camera = new THREE.PerspectiveCamera(30, 1, 1, 6000);
+const controls = new THREE.OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 50;
+controls.maxDistance = 1200;
+
+const view = { explode: 0.9, opacity: 0.22, cut: 0 };   // driven by the three sliders
+const DESIGN = "card";
+const state = { hovered: null, selected: null };
+let explodeShown = view.explode;
+let opacityShown = view.opacity;
+let pointerEvent = null, pointerDirty = false, downAt = null, userMovedCamera = false;
+const TEAL = new THREE.Color("#3BE3CB").multiplyScalar(0.3);
+
+/* ---------------- model ---------------- */
+
+function buildDevice() {
+  parts = [];
+  device = new THREE.Group();
+  root.add(device);
+  DESIGNS[DESIGN].build();
+  parts.forEach((p) => {
+    p.mats = [...new Set(p.meshes.flatMap((m) => (Array.isArray(m.material) ? m.material : [m.material])))];
+    p.isShell = p.mats.some((m) => shellMaterials.includes(m));
+  });
+  const f = FINISHES.graphite;
+  shellMaterials.forEach((m) => m.color.set(f.shell));
+  buttonMaterials.forEach((m) => m.color.set(f.button));
+  ledMaterials.forEach((m) => m.emissive.set(f.led));
+  parts.forEach((p) => p.mats.forEach((m) => { if (m.emissive) m.userData.baseEmissive = m.emissive.clone(); }));
+  applyOpacity(true);
+  applyExplode();
+}
+
+function applyOpacity(force = false) {
+  const o = opacityShown, see = o < 0.999;
+  [...shellMaterials, ...shellDecals].forEach((m) => {
+    if (force || m.transparent !== see) { m.transparent = see; m.depthWrite = !see; m.needsUpdate = true; }
+    m.opacity = o;
+  });
+  parts.forEach((p) => {
+    if (p.isShell) p.meshes.forEach((m) => { if (shellMaterials.includes(m.material)) m.castShadow = o > 0.3; });
+  });
+}
+
+const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+
+function applyExplode() {
+  const t = ease(explodeShown);
+  parts.forEach((p) => p.group.position.copy(p.base).addScaledVector(p.explodeVec, t));
+  const lowest = Math.min(0, ...parts.filter((p) => p.group.parent === device).map((p) => p.explodeVec.z));
+  device.position.z = -lowest * t + 0.01;
+}
+
+function frameCamera() {
+  const [L, W, H] = DESIGNS[DESIGN].size;
+  const reach = H + 58;                       // framed for the pulled-apart view
+  const radius = Math.hypot(L, W, reach) / 2;
+  const vHalf = (camera.fov * Math.PI) / 360;
+  const hHalf = Math.atan(Math.tan(vHalf) * camera.aspect);
+  const dist = (radius * 1.05) / Math.sin(Math.min(vHalf, hHalf));
+  const target = new THREE.Vector3(0, reach / 2 + 2, 0);
+  camera.position.copy(target).addScaledVector(new THREE.Vector3(-0.62, 0.62, 1).normalize(), dist);
+  controls.target.copy(target);
+  controls.update();
+}
+
+/* ---------------- hover, click, info ---------------- */
+
+function paint(p) {
+  const on = p === state.hovered || p === state.selected;
+  p.mats.forEach((m) => {
+    if (!m.emissive || !m.userData.baseEmissive) return;
+    m.emissive.copy(m.userData.baseEmissive);
+    if (on) m.emissive.add(TEAL);
+  });
+}
+
+function setHover(p) {
+  canvas.classList.toggle("picking", !!p);
+  if (state.hovered === p) return;
+  const prev = state.hovered;
+  state.hovered = p;
+  if (prev) paint(prev);
+  if (p) paint(p);
+}
+
+const raycaster = new THREE.Raycaster();
+function pick(e) {
+  const r = canvas.getBoundingClientRect();
+  raycaster.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+  const targets = [];
+  parts.forEach((p) => p.meshes.forEach((m) => { if (m.visible) targets.push(m); }));
+  let hits = raycaster.intersectObjects(targets, false).filter((h) => cutPlane.distanceToPoint(h.point) >= 0);
+  if (opacityShown < 0.05) hits = hits.filter((h) => !h.object.userData.part.isShell);
+  if (!hits.length) return null;
+  // While the shell is see-through, clicks go to the hardware behind it.
+  const inner = opacityShown < 0.6 ? hits.find((h) => !h.object.userData.part.isShell) : null;
+  return (inner || hits[0]).object.userData.part;
+}
+
+function showInfo(p, clientX = 0, clientY = 0) {
+  const prev = state.selected;
+  state.selected = p;
+  if (prev) paint(prev);
+  if (p) paint(p);
+  if (!p) { infoEl.hidden = true; return; }
+  const cat = CATEGORIES.find((c) => c.key === p.cat) || CATEGORIES[0];
+  infoEl.style.setProperty("--dot", `var(${cat.token})`);
+  document.getElementById("info-name").textContent = p.name;
+  document.getElementById("info-role").textContent = p.role;
+  document.getElementById("info-size").textContent = `${p.spec}\n${p.size} mm`;
+  infoEl.hidden = false;
+  const r = stageEl.getBoundingClientRect();
+  const w = infoEl.offsetWidth, h = infoEl.offsetHeight;
+  let x = clientX - r.left + 16, y = clientY - r.top + 16;
+  if (x + w > r.width - 8) x = clientX - r.left - w - 16;
+  if (y + h > r.height - 8) y = clientY - r.top - h - 16;
+  infoEl.style.left = `${Math.max(8, Math.min(x, r.width - w - 8))}px`;
+  infoEl.style.top = `${Math.max(8, Math.min(y, r.height - h - 8))}px`;
+}
+
+canvas.addEventListener("pointermove", (e) => { pointerEvent = e; pointerDirty = true; });
+canvas.addEventListener("pointerleave", () => { pointerEvent = null; setHover(null); });
+canvas.addEventListener("pointerdown", (e) => { downAt = [e.clientX, e.clientY]; hintEl.classList.add("is-gone"); });
+canvas.addEventListener("pointerup", (e) => {
+  if (downAt && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) < 5) showInfo(pick(e), e.clientX, e.clientY);
+  downAt = null;
+});
+controls.addEventListener("start", () => { userMovedCamera = true; });
+controls.addEventListener("change", () => { if (userMovedCamera && downAt) showInfo(null); });
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") showInfo(null); });
+
+function applyCut() {
+  const W = DESIGNS[DESIGN].size[1];
+  const front = W / 2 + 14, back = -W / 2 - 14;   // slices from the front edge toward the back
+  cutPlane.constant = view.cut <= 0 ? 1e6 : front - view.cut * (front - back);
+}
+
+function bindSlider(id, format, apply) {
+  const el = document.getElementById(id), out = document.getElementById(`${id}-out`);
+  const sync = () => { out.textContent = format(Number(el.value)); apply(Number(el.value) / 100); };
+  el.addEventListener("input", () => { sync(); showInfo(null); hintEl.classList.add("is-gone"); });
+  sync();
+}
+bindSlider("opacity", (v) => `${v}%`, (v) => { view.opacity = v; });
+bindSlider("explode", (v) => `${v}%`, (v) => { view.explode = v; });
+bindSlider("cut", (v) => (v === 0 ? "Off" : `${v}%`), (v) => { view.cut = v; applyCut(); });
+
+/* ---------------- frame loop ---------------- */
+
+function syncGroundToTheme() {
+  const rgb = getComputedStyle(document.documentElement).getPropertyValue("--ground-bottom").trim();
+  const hex = rgb.startsWith("#") ? parseInt(rgb.slice(1, 7), 16) : 0xffffff;
+  const luminance = (0.299 * ((hex >> 16) & 255) + 0.587 * ((hex >> 8) & 255) + 0.114 * (hex & 255)) / 255;
+  ground.material.opacity = luminance < 0.4 ? 0.45 : 0.16;
+}
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", syncGroundToTheme);
+new MutationObserver(syncGroundToTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+function resize() {
+  const w = Math.max(stageEl.clientWidth, 1), h = Math.max(stageEl.clientHeight, 1);
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  if (!userMovedCamera && device) frameCamera();
+}
+new ResizeObserver(resize).observe(stageEl);
+
+function approach(current, target) {
+  return reduceMotion || Math.abs(target - current) < 1e-3 ? target : current + (target - current) * 0.12;
+}
+
+function tick() {
+  requestAnimationFrame(tick);
+  if (pointerDirty && pointerEvent && !downAt) { pointerDirty = false; setHover(pick(pointerEvent)); }
+  if (explodeShown !== view.explode) { explodeShown = approach(explodeShown, view.explode); applyExplode(); }
+  if (opacityShown !== view.opacity) { opacityShown = approach(opacityShown, view.opacity); applyOpacity(); }
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+buildDevice();
+resize();
+frameCamera();
+syncGroundToTheme();
+document.getElementById("loading").hidden = true;
+tick();
+</script>
