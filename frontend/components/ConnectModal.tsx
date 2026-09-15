@@ -37,13 +37,18 @@ function formatMinutes(value?: number) {
   return Number(value || 0).toFixed(2).replace(/\.00$/, "");
 }
 
+type LoadState = "loading" | "ready" | "timeout" | "error";
+
+const LOAD_TIMEOUT_MS = 10_000;
+
 export default function ConnectModal({ listing, onClose }: Props) {
   const [duration, setDuration] = useState<(typeof DURATION_OPTIONS)[number]>(10);
   const [session, setSession] = useState<ProxySession | null>(null);
   const [refund, setRefund] = useState<EarlyExitResult | null>(null);
   const [myIp, setMyIp] = useState<string>("");
-  const [loading, setLoading] = useState(true);
+  const [loadState, setLoadState] = useState<LoadState>("loading");
   const [error, setError] = useState<string | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
 
   const portalUrl =
     listing.portalUrl || `http://${listing.hostIp || "localhost"}:8888/`;
@@ -51,6 +56,11 @@ export default function ConnectModal({ listing, onClose }: Props) {
 
   useEffect(() => {
     let mounted = true;
+    let interval: ReturnType<typeof setInterval> | null = null;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+
+    setLoadState("loading");
+    setError(null);
 
     async function refresh() {
       try {
@@ -64,21 +74,34 @@ export default function ConnectModal({ listing, onClose }: Props) {
             (!item.listing_id || item.listing_id === listing.id)
         );
         setSession(active || null);
+        setLoadState("ready");
+        setError(null);
+        if (timeout) {
+          clearTimeout(timeout);
+          timeout = null;
+        }
       } catch (err) {
         if (!mounted) return;
         setError(err instanceof Error ? err.message : "Could not load current session");
-      } finally {
-        if (mounted) setLoading(false);
+        setLoadState((prev) => (prev === "loading" ? "loading" : "error"));
       }
     }
 
+    timeout = setTimeout(() => {
+      if (!mounted) return;
+      setLoadState((prev) => (prev === "loading" ? "timeout" : prev));
+    }, LOAD_TIMEOUT_MS);
+
     refresh();
-    const interval = window.setInterval(refresh, 5000);
+    interval = setInterval(refresh, 5000);
     return () => {
       mounted = false;
-      window.clearInterval(interval);
+      if (interval) clearInterval(interval);
+      if (timeout) clearTimeout(timeout);
     };
-  }, [listing.id]);
+  }, [listing.id, retryNonce]);
+
+  const handleRetry = () => setRetryNonce((n) => n + 1);
 
   async function handleDisconnect() {
     if (!session) return;
@@ -113,33 +136,34 @@ export default function ConnectModal({ listing, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 py-8 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 px-3 py-4 backdrop-blur-sm sm:items-center sm:px-4 sm:py-8"
       onClick={(event) => event.target === event.currentTarget && onClose()}
     >
-      <div className="relative w-full max-w-3xl overflow-hidden rounded-[28px] border border-white/10 bg-[#0c1119] shadow-2xl">
-        <div className="border-b border-white/8 bg-[radial-gradient(circle_at_top_left,_rgba(34,197,94,0.18),_transparent_40%),radial-gradient(circle_at_top_right,_rgba(59,130,246,0.18),_transparent_35%),#0c1119] px-6 py-5">
-          <div className="flex items-start justify-between gap-4">
+      <div className="relative max-h-[95vh] w-full max-w-3xl overflow-y-auto rounded-[24px] border border-white/10 bg-[#0c1119] shadow-2xl sm:rounded-[28px]">
+        <div className="border-b border-white/8 bg-[radial-gradient(circle_at_top_left,_rgba(34,197,94,0.18),_transparent_40%),radial-gradient(circle_at_top_right,_rgba(59,130,246,0.18),_transparent_35%),#0c1119] px-5 py-4 sm:px-6 sm:py-5">
+          <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-xs uppercase tracking-[0.26em] text-emerald-300/70">
                 Hotspot Access
               </p>
-              <h2 className="mt-2 text-2xl font-semibold text-white">{listing.name}</h2>
+              <h2 className="mt-2 text-xl font-semibold text-white sm:text-2xl">{listing.name}</h2>
               <p className="mt-1 text-sm text-slate-300">
                 No roaming until payment clears. Humans use the captive portal, agents use x402.
               </p>
             </div>
             <button
               onClick={onClose}
-              className="rounded-full border border-white/10 p-2 text-slate-400 transition hover:text-white"
+              aria-label="Close"
+              className="inline-flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full border border-white/10 text-slate-400 transition hover:text-white"
             >
               ✕
             </button>
           </div>
         </div>
 
-        <div className="grid gap-6 px-6 py-6 lg:grid-cols-[1.05fr_0.95fr]">
+        <div className="grid gap-6 px-5 py-5 sm:px-6 sm:py-6 lg:grid-cols-[1.05fr_0.95fr]">
           <div className="space-y-5">
-            <div className="grid gap-3 sm:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {[
                 { label: "State", value: session ? "Session active" : "Blocked until paid" },
                 { label: "SSID", value: listing.ssid || "Listed hotspot" },
@@ -159,7 +183,7 @@ export default function ConnectModal({ listing, onClose }: Props) {
             </div>
 
             <div className="rounded-3xl border border-emerald-500/20 bg-emerald-500/10 p-5">
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <div className="text-xs uppercase tracking-[0.24em] text-emerald-200/70">
                     Human Flow
@@ -170,7 +194,7 @@ export default function ConnectModal({ listing, onClose }: Props) {
                 </div>
                 <a
                   href={portalUrl}
-                  className="rounded-full bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-300"
+                  className="inline-flex min-h-[44px] items-center justify-center self-start rounded-full bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-300"
                 >
                   Open Portal
                 </a>
@@ -192,7 +216,7 @@ export default function ConnectModal({ listing, onClose }: Props) {
                   <button
                     key={value}
                     onClick={() => setDuration(value)}
-                    className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                    className={`min-h-[44px] min-w-[72px] rounded-full px-4 py-2 text-sm font-semibold transition ${
                       duration === value
                         ? "bg-white text-slate-950"
                         : "bg-white/10 text-emerald-50 hover:bg-white/15"
@@ -225,8 +249,23 @@ export default function ConnectModal({ listing, onClose }: Props) {
               <div className="text-xs uppercase tracking-[0.24em] text-slate-500">
                 Live Session
               </div>
-              {loading ? (
-                <div className="mt-4 text-sm text-slate-400">Checking current hotspot state…</div>
+              {loadState === "loading" ? (
+                <div className="mt-4 flex items-center gap-2 text-sm text-slate-400">
+                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-slate-500" />
+                  Checking current hotspot state…
+                </div>
+              ) : loadState === "timeout" ? (
+                <div className="mt-4 space-y-3">
+                  <p className="text-sm text-amber-100">
+                    The proxy did not respond within 10 seconds. The host may be offline or unreachable from this network.
+                  </p>
+                  <button
+                    onClick={handleRetry}
+                    className="inline-flex min-h-[44px] items-center justify-center rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-500/15"
+                  >
+                    Retry
+                  </button>
+                </div>
               ) : session ? (
                 <div className="mt-4 space-y-4">
                   <div className="rounded-2xl bg-emerald-500/10 p-4 text-center">
@@ -271,7 +310,7 @@ export default function ConnectModal({ listing, onClose }: Props) {
 
                   <button
                     onClick={handleDisconnect}
-                    className="w-full rounded-2xl border border-red-500/30 bg-red-500/10 py-3 text-sm font-semibold text-red-300 transition hover:bg-red-500/15"
+                    className="min-h-[44px] w-full rounded-2xl border border-red-500/30 bg-red-500/10 py-3 text-sm font-semibold text-red-300 transition hover:bg-red-500/15"
                   >
                     Disconnect Early
                   </button>

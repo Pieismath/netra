@@ -41,29 +41,29 @@ export default async function MarketplacePage() {
         ).toFixed(4) + " SOL/min";
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
-      <div className="overflow-hidden rounded-[32px] border border-white/10 bg-[radial-gradient(circle_at_top_left,_rgba(34,197,94,0.22),_transparent_30%),radial-gradient(circle_at_top_right,_rgba(14,165,233,0.18),_transparent_35%),linear-gradient(180deg,#0b1220,#090d15)] px-6 py-8 shadow-[0_24px_80px_rgba(0,0,0,0.45)] sm:px-8">
-        <div className="flex flex-wrap items-start justify-between gap-6">
+    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
+      <div className="overflow-hidden rounded-[24px] border border-white/10 bg-[radial-gradient(circle_at_top_left,_rgba(34,197,94,0.22),_transparent_30%),radial-gradient(circle_at_top_right,_rgba(14,165,233,0.18),_transparent_35%),linear-gradient(180deg,#0b1220,#090d15)] px-5 py-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)] sm:rounded-[32px] sm:px-8 sm:py-8">
+        <div className="flex flex-col gap-5 md:flex-row md:flex-wrap md:items-start md:justify-between">
           <div className="max-w-3xl">
             <p className="text-xs uppercase tracking-[0.3em] text-emerald-200/70">
               Solana x402 + Filecoin
             </p>
-            <h1 className="mt-3 text-4xl font-semibold tracking-tight text-white sm:text-5xl">
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl lg:text-5xl">
               Paid hotspot access for humans and agents.
             </h1>
-            <p className="mt-4 max-w-2xl text-base leading-7 text-slate-300">
+            <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-300 sm:text-base">
               Join a real Wi-Fi hotspot, stay blocked until payment clears, then unlock timed internet access with a Solana receipt and a CID-backed session log.
             </p>
           </div>
           <a
             href="/host"
-            className="rounded-full bg-emerald-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-300"
+            className="inline-flex min-h-[44px] items-center justify-center self-start rounded-full bg-emerald-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-300"
           >
             List My Hotspot
           </a>
         </div>
 
-        <div className="mt-8 grid gap-4 sm:grid-cols-4">
+        <div className="mt-6 grid grid-cols-2 gap-3 sm:mt-8 sm:grid-cols-4 sm:gap-4">
           {[
             { label: "Live listings", value: listings.length },
             { label: "Available now", value: available },
@@ -72,16 +72,16 @@ export default async function MarketplacePage() {
           ].map((stat) => (
             <div
               key={stat.label}
-              className="rounded-2xl border border-white/8 bg-white/[0.04] px-5 py-4"
+              className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-3 sm:px-5 sm:py-4"
             >
-              <p className="text-2xl font-semibold text-white">{stat.value}</p>
-              <p className="mt-1 text-sm text-slate-500">{stat.label}</p>
+              <p className="text-xl font-semibold text-white sm:text-2xl">{stat.value}</p>
+              <p className="mt-1 text-xs text-slate-500 sm:text-sm">{stat.label}</p>
             </div>
           ))}
         </div>
       </div>
 
-      <div className="mt-8 rounded-[28px] border border-sky-500/20 bg-sky-500/10 p-5">
+      <div className="mt-6 rounded-[24px] border border-sky-500/20 bg-sky-500/10 p-5 sm:mt-8 sm:rounded-[28px]">
         <h3 className="mb-3 text-sm font-semibold uppercase tracking-[0.24em] text-sky-100/80">
           Judge Demo Flow
         </h3>
@@ -131,7 +131,7 @@ export default async function MarketplacePage() {
           </a>
         </div>
       ) : (
-        <div className="mt-8 grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-8 grid gap-4 sm:gap-5 md:grid-cols-2 xl:grid-cols-4">
           {listings.map((listing) => (
             <HotspotCard key={listing.id} listing={listing} />
           ))}

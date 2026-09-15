@@ -1,329 +1,321 @@
 "use client";
 
 /**
- * /host — Host registration page
+ * /host — Host onboarding landing page.
  *
- * Lets a hotspot owner list their network on the marketplace.
- * After submission the listing appears live in /marketplace.
+ * Two states:
+ *   - Wallet not connected → hero + Connect Phantom CTA.
+ *   - Wallet connected     → quick stats + the host's own hotspot listings.
  *
- * No ethernet needed: host runs this on their Mac, shares internet via
- * iPhone USB tethering → Internet Sharing → WiFi hotspot.
+ * Form moved to /host/new; manage flow lives at /host/[id].
  */
 
-import { useState } from "react";
-import { createListing } from "@/lib/api";
-import type { HotspotListing } from "@/lib/types";
-import QrCode from "@/components/QrCode";
-import { buildHotspotSsid, normalizeHotspotSsid, SSID_PREFIX } from "@/lib/ssid";
-
-type Phase = "form" | "submitting" | "done";
-
-function deriveHostIp(explicitHostIp: string) {
-  const trimmed = explicitHostIp.trim();
-  if (trimmed) return trimmed;
-  if (typeof window === "undefined") return undefined;
-
-  const host = window.location.hostname;
-  if (!host || host === "localhost" || host === "127.0.0.1") {
-    return undefined;
-  }
-  return host;
-}
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
+import { getDashboard, getHostListings } from "@/lib/api";
+import type { DashboardData, HotspotListing, ProxySession } from "@/lib/types";
+import { useWallet, shortenAddress } from "@/lib/wallet";
+import WalletButton from "@/components/WalletButton";
+import SignalBars from "@/components/SignalBars";
 
 export default function HostPage() {
-  const [phase, setPhase] = useState<Phase>("form");
-  const [listing, setListing] = useState<HotspotListing | null>(null);
+  const { publicKey } = useWallet();
+  const [listings, setListings] = useState<HotspotListing[]>([]);
+  const [dashboard, setDashboard] = useState<DashboardData | null>(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [form, setForm] = useState({
-    name: "",
-    ssid: "",
-    location: "",
-    pricePerMinute: "0.001",
-    downloadMbps: "100",
-    uploadMbps: "50",
-    signalStrength: "4",
-    host: "",
-    hostWallet: "",
-    hostIp: "",
-  });
-
-  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const val = e.target.value;
-    setForm((f) => {
-      const next = { ...f, [k]: val };
-      if (k === "name") {
-        next.ssid = buildHotspotSsid(val);
-      }
-      if (k === "ssid") {
-        next.ssid = normalizeHotspotSsid(val);
-      }
-      return next;
-    });
-  };
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setPhase("submitting");
-    setError(null);
-    try {
-      const resolvedHostIp = deriveHostIp(form.hostIp);
-      const result = await createListing({
-        id: "local-hotspot",
-        name: form.name,
-        ssid: form.ssid,
-        location: form.location,
-        pricePerMinute: parseFloat(form.pricePerMinute),
-        downloadMbps: parseInt(form.downloadMbps),
-        uploadMbps: parseInt(form.uploadMbps),
-        signalStrength: parseInt(form.signalStrength),
-        host: form.host || "Netra Test Account",
-        hostWallet: form.hostWallet || undefined,
-        hostIp: resolvedHostIp,
-        real: true,
-        demo: false,
-      });
-      setListing(result);
-      setPhase("done");
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to create listing");
-      setPhase("form");
+  useEffect(() => {
+    if (!publicKey) {
+      setListings([]);
+      setDashboard(null);
+      return;
     }
-  }
+    let cancelled = false;
+    setLoading(true);
+    Promise.all([getHostListings(publicKey), getDashboard()])
+      .then(([hostListings, dash]) => {
+        if (cancelled) return;
+        setListings(hostListings);
+        setDashboard(dash);
+        setError(null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Failed to load host data");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [publicKey]);
 
-  if (phase === "done" && listing) {
-    return (
-      <div className="mx-auto max-w-lg space-y-6 px-4 py-16">
-        <div className="text-center space-y-2">
-          <div className="w-16 h-16 rounded-full bg-emerald-500/10 flex items-center justify-center mx-auto">
-            <svg className="w-8 h-8 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
-          <h1 className="text-2xl font-bold text-white">Primary Hotspot Updated</h1>
-          <p className="text-slate-400">Your live Netra hotspot is now ready for both captive-portal buyers and x402 clients.</p>
-        </div>
-
-        {/* Listing summary */}
-        <div className="space-y-3 rounded-2xl border border-white/8 bg-[#0f0f1a] p-5 text-sm">
-          <Row label="Name" value={listing.name} />
-          <Row label="SSID" value={listing.ssid ?? "—"} mono />
-          <Row label="Location" value={listing.location} />
-          <Row label="Price" value={`${listing.pricePerMinute} SOL / min`} />
-          <Row label="Speed" value={`${listing.downloadMbps}↓ / ${listing.uploadMbps}↑ Mbps`} />
-          {listing.hostWallet && <Row label="Host wallet" value={listing.hostWallet} mono />}
-          {listing.hostIp && <Row label="Proxy" value={`${listing.hostIp}:8080`} mono />}
-          {listing.filecoin?.latestReputationCid && (
-            <Row label="Reputation CID" value={listing.filecoin.latestReputationCid} mono />
-          )}
-        </div>
-
-        {/* QR code linking to marketplace */}
-        <div className="flex flex-col items-center gap-3 rounded-2xl border border-white/8 bg-[#0f0f1a] p-5">
-          <p className="text-sm text-slate-400">Show this QR code to open the captive portal for your live hotspot</p>
-          <QrCode value={listing.portalUrl ?? `http://localhost:3000/marketplace`} size={180} />
-          {listing.portalUrl && (
-            <p className="text-xs text-slate-600 font-mono break-all text-center">{listing.portalUrl}</p>
-          )}
-        </div>
-
-        {/* Setup instructions */}
-        <div className="space-y-4 rounded-2xl border border-white/8 bg-[#0f0f1a] p-5">
-          <h3 className="text-white font-semibold">Setup checklist</h3>
-          <ol className="space-y-3 text-sm text-slate-400 list-none">
-            <Step n={1} text="Enable Internet Sharing on your Mac (share your connection over WiFi)" />
-            <Step n={2} text={`Set your WiFi network name to: "${listing?.ssid ?? form.ssid}"`} />
-            <Step n={3} text="Run: ./start.sh (starts everything automatically)" />
-            <Step n={4} text="Human buyers connect, pay in Phantom, and only then get internet access." />
-            <Step n={5} text="Agent buyers can call the x402 endpoint to purchase access programmatically on Solana devnet." />
-          </ol>
-        </div>
-
-        <div className="flex gap-3">
-          <a
-            href="/marketplace"
-            className="flex-1 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold text-center transition-colors"
-          >
-            View Marketplace
-          </a>
-          <button
-            onClick={() => { setPhase("form"); setListing(null); }}
-            className="flex-1 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 text-sm font-semibold transition-colors"
-          >
-            List Another
-          </button>
-        </div>
-      </div>
-    );
+  if (!publicKey) {
+    return <ConnectPrompt />;
   }
 
   return (
-    <div className="mx-auto max-w-lg px-4 py-12">
-      <div className="mb-8">
-        <p className="text-xs uppercase tracking-[0.28em] text-emerald-300/70">Host Setup</p>
-        <h1 className="mt-3 text-3xl font-bold text-white">Launch a programmable hotspot</h1>
-        <p className="mt-2 text-slate-400">
-          Publish the live hotspot that buyers will actually connect to. Solana handles payment proof, and every session rolls into a CID-backed host reputation record.
+    <ConnectedView
+      publicKey={publicKey}
+      listings={listings}
+      dashboard={dashboard}
+      loading={loading}
+      error={error}
+    />
+  );
+}
+
+function ConnectPrompt() {
+  return (
+    <div className="mx-auto max-w-4xl px-4 py-16 sm:px-6 lg:px-8">
+      <div className="overflow-hidden rounded-[32px] border border-white/10 bg-[radial-gradient(circle_at_top_left,_rgba(168,159,242,0.22),_transparent_30%),radial-gradient(circle_at_top_right,_rgba(34,197,94,0.18),_transparent_35%),linear-gradient(180deg,#0b1220,#090d15)] px-8 py-12 shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
+        <p className="text-xs uppercase tracking-[0.3em] text-emerald-200/70">Become a host</p>
+        <h1 className="mt-3 text-4xl font-semibold tracking-tight text-white sm:text-5xl">
+          Earn SOL for every minute someone uses your hotspot.
+        </h1>
+        <p className="mt-4 max-w-2xl text-base leading-7 text-slate-300">
+          Connect a Phantom wallet to list your first hotspot. You set the price, Netra
+          handles paywall, payment proof, and Filecoin-backed receipts.
         </p>
-      </div>
 
-      {/* How it works */}
-      <div className="mb-6 space-y-2 rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm text-emerald-100">
-        <p className="font-semibold text-emerald-50">What judges will see</p>
-        <p>Your hotspot updates the primary live listing, appears as <strong className="font-mono text-white">{SSID_PREFIX}YourName</strong>, blocks free roaming until payment clears, shows a Solana transaction proof, and leaves a portable Filecoin-style receipt trail in the dashboard.</p>
-      </div>
-
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <Field label="Hotspot name" hint="e.g. CafeNova Uplink">
-          <input
-            required
-            value={form.name}
-            onChange={set("name")}
-            placeholder="My Hotspot"
-            className={inputCls}
-          />
-        </Field>
-
-        <Field label="WiFi SSID" hint="Shows in buyers' WiFi settings — auto-generated from name">
-          <input
-            required
-            value={form.ssid}
-            onChange={set("ssid")}
-            placeholder={`${SSID_PREFIX}CafeNova`}
-            className={inputCls}
-          />
-          <p className="text-xs text-slate-600 mt-1">
-            Tip: the {SSID_PREFIX} prefix is always added for you, even if you type a plain hotspot name.
-          </p>
-        </Field>
-
-        <Field label="Location" hint="Helps buyers find you">
-          <input
-            value={form.location}
-            onChange={set("location")}
-            placeholder="San Francisco, CA · Mission District"
-            className={inputCls}
-          />
-        </Field>
-
-        <Field label="Hotspot IP" hint="Leave blank to use the current Netra page host automatically">
-          <input
-            value={form.hostIp}
-            onChange={set("hostIp")}
-            placeholder="192.168.2.1"
-            className={inputCls}
-          />
-        </Field>
-
-        <Field label="Price per minute (SOL)">
-          <input
-            required
-            type="number"
-            step="0.001"
-            min="0.001"
-            value={form.pricePerMinute}
-            onChange={set("pricePerMinute")}
-            className={inputCls}
-          />
-        </Field>
-
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Download (Mbps)">
-            <input
-              type="number"
-              min="1"
-              value={form.downloadMbps}
-              onChange={set("downloadMbps")}
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Upload (Mbps)">
-            <input
-              type="number"
-              min="1"
-              value={form.uploadMbps}
-              onChange={set("uploadMbps")}
-              className={inputCls}
-            />
-          </Field>
+        <div className="mt-8">
+          <WalletButton />
         </div>
 
-        <Field label="Signal strength">
-          <select value={form.signalStrength} onChange={set("signalStrength")} className={inputCls}>
-            <option value="5">5 bars — Excellent</option>
-            <option value="4">4 bars — Good</option>
-            <option value="3">3 bars — Fair</option>
-            <option value="2">2 bars — Weak</option>
-          </select>
-        </Field>
+        <div className="mt-10 grid gap-4 sm:grid-cols-3">
+          {[
+            {
+              title: "Price your bandwidth",
+              body: "Set per-minute SOL pricing and a tier label so buyers know what to expect.",
+            },
+            {
+              title: "Get paid on Solana",
+              body: "Buyers pay directly to your wallet on devnet — every receipt is a real on-chain tx.",
+            },
+            {
+              title: "Portable reputation",
+              body: "Each session mints a Filecoin-style CID that follows your hotspot anywhere.",
+            },
+          ].map((card) => (
+            <div
+              key={card.title}
+              className="rounded-2xl border border-white/8 bg-white/[0.04] p-5"
+            >
+              <p className="text-sm font-semibold text-white">{card.title}</p>
+              <p className="mt-2 text-sm leading-6 text-slate-400">{card.body}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-        <Field label="Display handle (optional)" hint="Wallet address or name shown to buyers">
-          <input
-            value={form.host}
-            onChange={set("host")}
-            placeholder="@cafenova"
-            className={inputCls}
-          />
-        </Field>
+interface ConnectedViewProps {
+  publicKey: string;
+  listings: HotspotListing[];
+  dashboard: DashboardData | null;
+  loading: boolean;
+  error: string | null;
+}
 
-        <Field label="Solana payout wallet" hint="Used by the captive portal and x402 payment challenges">
-          <input
-            value={form.hostWallet}
-            onChange={set("hostWallet")}
-            placeholder="4Nd1m...devnet"
-            className={inputCls}
-          />
-        </Field>
+function ConnectedView({ publicKey, listings, dashboard, loading, error }: ConnectedViewProps) {
+  const stats = useMemo(() => buildStats(publicKey, listings, dashboard), [publicKey, listings, dashboard]);
 
-        {error && (
-          <p className="text-red-400 text-sm bg-red-400/10 rounded-lg px-3 py-2">{error}</p>
+  return (
+    <div className="mx-auto max-w-7xl space-y-8 px-4 py-10 sm:px-6 lg:px-8">
+      <header className="overflow-hidden rounded-[32px] border border-white/10 bg-[radial-gradient(circle_at_top_left,_rgba(34,197,94,0.18),_transparent_30%),radial-gradient(circle_at_top_right,_rgba(168,159,242,0.18),_transparent_35%),linear-gradient(180deg,#0b1220,#090d15)] px-6 py-8 shadow-[0_24px_80px_rgba(0,0,0,0.45)] sm:px-8">
+        <div className="flex flex-wrap items-start justify-between gap-6">
+          <div>
+            <p className="text-xs uppercase tracking-[0.3em] text-emerald-200/70">Host console</p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+              Welcome back, {shortenAddress(publicKey)}.
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
+              Manage every hotspot you own from one place. Add a new one, tune pricing,
+              or pause a hotspot when you need to take it offline.
+            </p>
+          </div>
+          <WalletButton variant="compact" />
+        </div>
+
+        <div className="mt-8 grid gap-4 sm:grid-cols-4">
+          {stats.map((stat) => (
+            <div
+              key={stat.label}
+              className="rounded-2xl border border-white/8 bg-white/[0.04] px-5 py-4"
+            >
+              <p className="text-2xl font-semibold text-white">{stat.value}</p>
+              <p className="mt-1 text-sm text-slate-500">{stat.label}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-6 flex flex-wrap gap-3">
+          <Link
+            href="/host/new"
+            className="rounded-full bg-emerald-400 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-300"
+          >
+            + Add hotspot
+          </Link>
+          <Link
+            href="/host/earnings"
+            className="rounded-full border border-white/10 bg-white/[0.04] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-white/10"
+          >
+            View earnings
+          </Link>
+          <Link
+            href="/dashboard"
+            className="rounded-full border border-white/10 bg-white/[0.04] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-white/10"
+          >
+            Operations dashboard
+          </Link>
+        </div>
+      </header>
+
+      {error && (
+        <div className="rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          {error}
+        </div>
+      )}
+
+      <section className="space-y-4">
+        <div className="flex items-end justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-semibold text-white">Your hotspots</h2>
+            <p className="text-sm text-slate-500">
+              {listings.length === 0
+                ? "Nothing live yet — list your first hotspot to start earning."
+                : `${listings.length} listing${listings.length === 1 ? "" : "s"} tied to this wallet.`}
+            </p>
+          </div>
+        </div>
+
+        {loading && listings.length === 0 ? (
+          <div className="rounded-[28px] border border-white/8 bg-[#0d1420] p-8 text-sm text-slate-400">
+            Loading your hotspots…
+          </div>
+        ) : listings.length === 0 ? (
+          <EmptyHostspots />
+        ) : (
+          <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+            {listings.map((listing) => (
+              <HostHotspotCard
+                key={listing.id}
+                listing={listing}
+                sessions={dashboard?.sessions ?? []}
+              />
+            ))}
+          </div>
         )}
+      </section>
+    </div>
+  );
+}
 
-        <button
-          type="submit"
-          disabled={phase === "submitting"}
-          className="w-full rounded-xl bg-emerald-400 py-3 font-semibold text-slate-950 transition-colors hover:bg-emerald-300 disabled:opacity-50"
+function EmptyHostspots() {
+  return (
+    <div className="rounded-[28px] border border-dashed border-white/10 bg-[#0d1420] p-10 text-center">
+      <h3 className="text-lg font-semibold text-white">List your first hotspot</h3>
+      <p className="mx-auto mt-2 max-w-md text-sm text-slate-400">
+        Anyone with a Mac sharing internet over Wi-Fi can list a hotspot. The whole
+        flow takes about a minute and your wallet receives every payment directly.
+      </p>
+      <Link
+        href="/host/new"
+        className="mt-6 inline-flex rounded-full bg-emerald-400 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-300"
+      >
+        + Add hotspot
+      </Link>
+    </div>
+  );
+}
+
+interface HostCardProps {
+  listing: HotspotListing;
+  sessions: ProxySession[];
+}
+
+function HostHotspotCard({ listing, sessions }: HostCardProps) {
+  const listingSessions = sessions.filter((s) => s.listing_id === listing.id);
+  const active = listingSessions.filter((s) => s.active).length;
+  const earned = listingSessions.reduce((sum, s) => sum + (s.amount_sol ?? 0), 0);
+  const available = listing.status === "available";
+
+  return (
+    <Link
+      href={`/host/${encodeURIComponent(listing.id)}`}
+      className="group flex flex-col gap-4 rounded-[28px] border border-white/8 bg-[linear-gradient(180deg,rgba(15,23,42,0.95),rgba(10,15,23,0.98))] p-5 transition-colors hover:border-emerald-400/30"
+    >
+      <div className="flex items-center justify-between">
+        <span
+          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
+            available
+              ? "bg-emerald-500/10 text-emerald-300"
+              : "bg-amber-500/10 text-amber-300"
+          }`}
         >
-          {phase === "submitting" ? "Listing…" : "List My Hotspot"}
-        </button>
-      </form>
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${
+              available ? "animate-pulse bg-emerald-400" : "bg-amber-400"
+            }`}
+          />
+          {available ? "Available" : "Paused"}
+        </span>
+        <SignalBars strength={listing.signalStrength} />
+      </div>
+
+      <div>
+        <h3 className="text-base font-semibold text-white transition-colors group-hover:text-emerald-200">
+          {listing.name}
+        </h3>
+        <p className="mt-0.5 text-sm text-slate-500">{listing.location || "No location set"}</p>
+        {listing.ssid && (
+          <p className="mt-2 inline-block rounded-full bg-emerald-500/10 px-2 py-0.5 font-mono text-xs text-emerald-300">
+            {listing.ssid}
+          </p>
+        )}
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 text-xs">
+        <Stat label="Active" value={String(active)} />
+        <Stat label="Earned" value={`${earned.toFixed(4)} SOL`} />
+        <Stat label="Rate" value={`${listing.pricePerMinute}/min`} />
+      </div>
+
+      <div className="flex items-center justify-between border-t border-white/5 pt-3 text-xs text-slate-500">
+        <span>{listing.downloadMbps}↓ / {listing.uploadMbps}↑ Mbps</span>
+        <span className="text-emerald-300 transition group-hover:translate-x-0.5">Manage →</span>
+      </div>
+    </Link>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2">
+      <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{label}</div>
+      <div className="mt-1 font-semibold text-white">{value}</div>
     </div>
   );
 }
 
-// ── small helpers ──────────────────────────────────────────────────────────────
+function buildStats(
+  publicKey: string,
+  listings: HotspotListing[],
+  dashboard: DashboardData | null
+) {
+  const ids = new Set(listings.map((l) => l.id));
+  const mySessions = (dashboard?.sessions ?? []).filter((s) => ids.has(s.listing_id));
+  const earned = mySessions.reduce((sum, s) => sum + (s.amount_sol ?? 0), 0);
+  const active = mySessions.filter((s) => s.active).length;
 
-const inputCls =
-  "w-full bg-[#0f0f1a] border border-white/10 rounded-xl px-4 py-3 text-white placeholder-slate-600 text-sm focus:outline-none focus:border-indigo-500 transition-colors";
-
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <div className="space-y-1.5">
-      <label className="block text-sm font-medium text-slate-300">
-        {label}
-        {hint && <span className="text-slate-600 font-normal"> · {hint}</span>}
-      </label>
-      {children}
-    </div>
-  );
-}
-
-function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="flex justify-between gap-2">
-      <span className="text-slate-400">{label}</span>
-      <span className={`text-white ${mono ? "font-mono text-xs" : "font-medium"} text-right`}>{value}</span>
-    </div>
-  );
-}
-
-function Step({ n, text }: { n: number; text: string }) {
-  return (
-    <li className="flex gap-3">
-      <span className="w-6 h-6 rounded-full bg-indigo-600/30 text-indigo-400 text-xs flex items-center justify-center font-bold flex-shrink-0 mt-0.5">
-        {n}
-      </span>
-      <span>{text}</span>
-    </li>
-  );
+  return [
+    { label: "Hotspots", value: String(listings.length) },
+    { label: "Active sessions", value: String(active) },
+    { label: "Earned (lifetime)", value: `${earned.toFixed(4)} SOL` },
+    { label: "Wallet", value: shortenAddress(publicKey, 4, 4) },
+  ];
 }

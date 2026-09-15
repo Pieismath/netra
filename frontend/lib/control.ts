@@ -1,19 +1,26 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 
 export const CONTROL_API =
   process.env.CONTROL_API ?? process.env.NEXT_PUBLIC_CONTROL_API ?? "http://localhost:3001";
 
+interface ProxyOptions extends RequestInit {
+  forwardFrom?: NextRequest;
+}
+
 export async function proxyToControl(
   path: string,
-  init?: RequestInit
+  init?: ProxyOptions
 ): Promise<NextResponse> {
+  const { forwardFrom, ...rest } = init ?? {};
+  const forwardedAuth = forwardFrom?.headers.get("authorization");
   try {
     const res = await fetch(`${CONTROL_API}${path}`, {
       cache: "no-store",
-      ...init,
+      ...rest,
       headers: {
         "Content-Type": "application/json",
-        ...(init?.headers ?? {}),
+        ...(forwardedAuth ? { Authorization: forwardedAuth } : {}),
+        ...(rest.headers ?? {}),
       },
     });
     const text = await res.text();

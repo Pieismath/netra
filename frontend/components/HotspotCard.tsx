@@ -65,10 +65,10 @@ export default function HotspotCard({ listing }: { listing: HotspotListing }) {
           <button
             disabled={!available}
             onClick={() => setShowModal(true)}
-            className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
+            className={`min-h-[44px] rounded-xl px-4 py-2 text-sm font-semibold transition-all ${
               available
                 ? "bg-emerald-400 text-slate-950 hover:bg-emerald-300"
-                : "bg-white/5 text-slate-500 cursor-not-allowed"
+                : "cursor-not-allowed bg-white/5 text-slate-500"
             }`}
           >
             {available ? "View Access" : "In use"}

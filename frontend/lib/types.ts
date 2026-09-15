@@ -15,6 +15,10 @@ export interface HotspotListing {
   portalUrl?: string;  // http://[hostIp]:8888/ — captive portal entry point
   uploadMbps: number;
   downloadMbps: number;
+  // TODO(backend): persist `description` and `bandwidthTier` so the host
+  // onboarding flow can round-trip them without losing data.
+  description?: string;
+  bandwidthTier?: "basic" | "standard" | "premium";
   durationOptions?: number[];
   demo?: boolean;
   real?: boolean;
