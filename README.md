@@ -2,6 +2,10 @@
 
 Netra is a programmable paid hotspot for humans and AI agents. A host shares internet through a real Wi-Fi hotspot, traffic stays blocked until payment is verified, and every session produces a portable receipt with a Solana payment proof plus a CID-backed audit artifact for long-term reputation and service history.
 
+[![Interactive 3D teardown of the Netra pocket hotspot: exploded view of the housing, main board, LTE modem, Wi-Fi chip, antennas and battery](hardware/netra-teardown-preview.png)](https://pieismath.github.io/netra-viewer/)
+
+**[Open the interactive 3D teardown](https://pieismath.github.io/netra-viewer/)**: rotate the hotspot, fade the shell, explode or cut through it, and click any part to see what it does. Source: [`hardware/netra-teardown.html`](hardware/netra-teardown.html).
+
 ## What It Does
 
 - Human buyers join a hotspot and are forced through a captive portal before internet access opens.
