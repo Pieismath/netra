@@ -1,0 +1,8 @@
+s1|Software can hold a wallet now. Nothing will sell it a network connection.
+s2|Every day, millions of payments settle over x402. They buy API calls, files, datasets. Not one of them buys the connection itself.
+s3|Netra is a hotspot that opens only against a verified payment. Join, and every site is blocked at the firewall. Pay, and it opens, in seconds.
+s4|A host lists a hotspot and sets a price per minute. A buyer joins, hits the portal, and pays with a Solana wallet. The firewall opens. When the session ends, unused minutes are refunded automatically, and both sides get a receipt that no one can edit.
+s5|An agent takes the same path with no browser at all. It calls the endpoint, gets a 402 with the price and the deadline, pays, and retries with proof. Same gate. Two kinds of buyer.
+s6|Three form factors. One control plane. Hardware follows revenue, not the other way round.
+s7|Working end to end today: firewall gating, wallet checkout, the x402 API, prorated refunds, and an agent SDK with a spending cap. Track winner at Penn Blockchain 2026 for agentic payments with x402.
+s8|Netra. Pay-per-use internet access an AI agent can buy by itself.
